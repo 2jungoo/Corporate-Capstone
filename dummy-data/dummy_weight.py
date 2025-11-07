@@ -127,6 +127,20 @@ CONFIG = {
     "pig_init_mix": {"piglet": 0.50, "pig": 0.35, "grown_pig": 0.15},
     "min_piglet_per_chamber": 3,
     "seed": None,
+    "unhealthy_pig_id": 1,
+    "pig_unhealthy_gain_scale": 0.7,
+    "pig_unhealthy_feed_scale": 0.85,
+    "pig_unhealthy_temp_add": 0.8,
+    "pig_unhealthy_resp_add": 6,
+    "sick_mode": "daily",
+    "sick_prob_per_day": 0.05,
+    "disease_weights": {"fever":0.55,"enteritis":0.25,"cold":0.10,"cough":0.10},
+    "disease_global_scale": {"gain":0.75,"feed":0.80,"temp":1.40,"resp":1.30},
+    "disease_class_sensitivity": {
+    "piglet": {"gain":0.85,"feed":0.85,"temp":1.20,"resp":1.20},
+    "pig": {"gain":1.00,"feed":1.00,"temp":1.00,"resp":1.00},
+    "grown_pig": {"gain":0.95,"feed":0.95,"temp":0.90,"resp":1.00}
+    },
 }
 
 EXCLUDE_COLS = {
@@ -576,16 +590,63 @@ def gen_pig_daily(cfg):
     days = int(cfg.get("duration_days", 30))
     out = []
     for chamber in cfg["chambers"]:
-        unhealthy_id = int(cfg["unhealthy_pig_id"])
-        for pig_id in range(1, int(cfg["pigs_per_chamber"]) + 1):
+        n_pigs = int(cfg["pigs_per_chamber"])
+        mode = str(cfg.get("sick_mode", "one_per_chamber_per_day"))
+        unhealthy_id = int(cfg.get("unhealthy_pig_id", 1))
+        diseases = cfg.get("diseases", {
+            "cold": {"gain_scale":0.85,"feed_scale":0.90,"temp_add":0.6,"resp_add":4},
+            "enteritis": {"gain_scale":0.70,"feed_scale":0.75,"temp_add":0.5,"resp_add":2},
+            "fever": {"gain_scale":0.60,"feed_scale":0.80,"temp_add":1.2,"resp_add":8},
+            "cough": {"gain_scale":0.90,"feed_scale":0.95,"temp_add":0.3,"resp_add":6}
+        })
+        weights_cfg = cfg.get("disease_weights", {"cold":0.4,"enteritis":0.25,"fever":0.2,"cough":0.15})
+        dn = [k for k in diseases.keys() if k in weights_cfg]
+        wp = np.array([weights_cfg[k] for k in dn], dtype=float)
+        wp = wp / wp.sum() if wp.sum() > 0 else np.ones(len(dn))/max(len(dn),1)
+        gs = cfg.get("disease_global_scale", {"gain":1.0,"feed":1.0,"temp":1.0,"resp":1.0})
+        cs = cfg.get("disease_class_sensitivity", {})
+        daily_sick_ids = None
+        daily_diseases = None
+        if mode == "one_per_chamber_per_day":
+            daily_sick_ids = [int(rng.integers(1, n_pigs + 1)) for _ in range(days)]
+            daily_diseases = [dn[int(rng.choice(len(dn), p=wp))] for _ in range(days)]
+        use_init_mix = ("pig_init_mix" in cfg) and ("pig_init_weight_range_by_class" in cfg)
+        init_classes = []
+        init_weights = []
+        if use_init_mix:
+            mix = cfg["pig_init_mix"]
+            p_piglet = float(mix["piglet"]); p_pig = float(mix["pig"]); p_grown = float(mix["grown_pig"])
+            for _ in range(n_pigs):
+                u = rng.random()
+                if u < p_piglet:
+                    init_classes.append("piglet")
+                elif u < p_piglet + p_pig:
+                    init_classes.append("pig")
+                else:
+                    init_classes.append("grown_pig")
+            need = max(0, int(cfg.get("min_piglet_per_chamber", 0)) - sum(1 for c in init_classes if c == "piglet"))
+            if need > 0:
+                for i in range(n_pigs):
+                    if init_classes[i] != "piglet":
+                        init_classes[i] = "piglet"
+                        need -= 1
+                        if need == 0:
+                            break
+            w_ranges = cfg["pig_init_weight_range_by_class"]
+            for cls0 in init_classes:
+                w_lo, w_hi = w_ranges[cls0]
+                init_weights.append(float(rng.uniform(w_lo, w_hi)))
+        for idx, pig_id in enumerate(range(1, n_pigs + 1)):
             prev_vec = None
+            prev_feed = None
+            prev_cls = None
             w_idx = cols.index("weight_kg") if "weight_kg" in cols else None
             if w_idx is None:
                 continue
-            w = float(rng.uniform(cfg["pig_start_weight_range"][0], cfg["pig_start_weight_range"][1]))
-            prev_feed = None
-            prev_cls = None
-            is_unhealthy = (pig_id == unhealthy_id)
+            if use_init_mix:
+                w = init_weights[idx]
+            else:
+                w = float(rng.uniform(cfg["pig_start_weight_range"][0], cfg["pig_start_weight_range"][1]))
             for d in range(days):
                 ts = start_ts + pd.Timedelta(days=d)
                 x_raw = next_vector(st, prev_vec, 0, cfg["sigma_scale"])
@@ -593,22 +654,62 @@ def gen_pig_daily(cfg):
                 x = clamp(x_raw, lo, hi)
                 cls = _pig_class_of(w, cfg)
                 adg = _adg_for(w, cls, cfg)
-                if is_unhealthy:
-                    adg *= float(cfg["pig_unhealthy_gain_scale"])
+                is_sick = False
+                disease_name = "healthy"
+                if mode == "fixed":
+                    is_sick = (pig_id == unhealthy_id)
+                    if is_sick:
+                        disease_name = cfg.get("fixed_disease", dn[int(rng.choice(len(dn), p=wp))])
+                elif mode == "daily":
+                    if rng.random() < float(cfg.get("sick_prob_per_day", 0.05)):
+                        is_sick = True
+                        disease_name = dn[int(rng.choice(len(dn), p=wp))]
+                elif mode == "one_per_chamber_per_day":
+                    is_sick = (pig_id == daily_sick_ids[d])
+                    if is_sick:
+                        disease_name = daily_diseases[d]
+                if is_sick:
+                    prm = diseases.get(disease_name, {"gain_scale":1.0,"feed_scale":1.0,"temp_add":0.0,"resp_add":0.0})
+                    cm = cs.get(cls, {"gain":1.0,"feed":1.0,"temp":1.0,"resp":1.0})
+                    gscale = float(prm.get("gain_scale",1.0)) * float(gs.get("gain",1.0)) * float(cm.get("gain",1.0))
+                    adg *= gscale
                 w = min(w + adg, float(cfg["slaughter_weight_kg"]))
                 x[w_idx] = float(np.clip(w, bounds["weight_kg"][0], bounds["weight_kg"][1]))
                 feedstuff_kg = _feedstuff_draw(w, cls, prev_feed, prev_cls, cfg)
-                if is_unhealthy:
-                    feedstuff_kg *= float(cfg["pig_unhealthy_feed_scale"])
+                if is_sick:
+                    prm = diseases.get(disease_name, {"gain_scale":1.0,"feed_scale":1.0,"temp_add":0.0,"resp_add":0.0})
+                    cm = cs.get(cls, {"gain":1.0,"feed":1.0,"temp":1.0,"resp":1.0})
+                    fscale = float(prm.get("feed_scale",1.0)) * float(gs.get("feed",1.0)) * float(cm.get("feed",1.0))
+                    feedstuff_kg *= fscale
+                row = {c: float(x[j]) for j, c in enumerate(cols)}
+                if is_sick:
+                    prm = diseases.get(disease_name, {"gain_scale":1.0,"feed_scale":1.0,"temp_add":0.0,"resp_add":0.0})
+                    cm = cs.get(cls, {"gain":1.0,"feed":1.0,"temp":1.0,"resp":1.0})
+                    tadd = float(prm.get("temp_add",0.0)) * float(gs.get("temp",1.0)) * float(cm.get("temp",1.0))
+                    radd = float(prm.get("resp_add",0.0)) * float(gs.get("resp",1.0)) * float(cm.get("resp",1.0))
+                    if "rectal_temp_c" in row:
+                        row["rectal_temp_c"] = float(np.clip(row["rectal_temp_c"] + tadd, bounds["rectal_temp_c"][0], bounds["rectal_temp_c"][1]))
+                    for k in ["skin_temp_back","skin_temp_neck","skin_temp_head"]:
+                        if k in row:
+                            row[k] = float(np.clip(row[k] + tadd*0.8, bounds[k][0], bounds[k][1]))
+                    if "resp_per_min" in row:
+                        row["resp_per_min"] = float(np.clip(row["resp_per_min"] + radd, bounds["resp_per_min"][0], bounds["resp_per_min"][1]))
+                prev_vec = np.array([row[c] for c in cols], dtype=float)
                 prev_feed = feedstuff_kg
                 prev_cls = cls
-                row = {c: float(x[j]) for j,c in enumerate(cols)}
-                prev_vec = np.array([row[c] for c in cols], dtype=float)
-                rec = {"chamber": chamber, "pig_id": pig_id, "pig_class": cls, "feedstuff_kg": round(float(feedstuff_kg), 3), "ts": ts_fmt(ts.to_pydatetime())}
+                rec = {
+                    "chamber": chamber,
+                    "pig_id": pig_id,
+                    "pig_class": cls,
+                    "sick": 1 if is_sick else 0,
+                    "disease": disease_name,
+                    "feedstuff_kg": round(float(feedstuff_kg), 3),
+                    "ts": ts_fmt(ts.to_pydatetime())
+                }
                 rec.update(row)
                 out.append(rec)
     out_df = pd.DataFrame(out)
-    first_cols = ["chamber","pig_id","pig_class","feedstuff_kg","ts"]
+    first_cols = ["chamber","pig_id","pig_class","sick","disease","feedstuff_kg","ts"]
     other_cols = [c for c in out_df.columns if c not in first_cols]
     out_df = out_df[first_cols + other_cols]
     out_dir = Path(cfg["base_dir"]) / "pig_daily"

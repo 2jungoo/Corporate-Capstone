@@ -1,0 +1,301 @@
+{
+  "model_path": "./model/xgb_unified.json",
+  "device_used": "cuda:0",
+  "ts_col": "ts",
+  "rule": "15min",
+  "lags_self": 32,
+  "wins_self": [
+    4,
+    8,
+    16,
+    32
+  ],
+  "horizons": [
+    1,
+    2,
+    4,
+    8,
+    12
+  ],
+  "value_cols": [
+    "evaporation",
+    "T_0.5",
+    "RH_0.5",
+    "CO2_0.5",
+    "NH3_0.5",
+    "T_1.5",
+    "RH_1.5",
+    "CO2_1.5",
+    "NH3_1.5",
+    "fan_rpm",
+    "fan_power_w",
+    "ventilation",
+    "heating_value",
+    "outside_temp",
+    "inside_temp",
+    "outside_humidity",
+    "inside_humidity"
+  ],
+  "exclude_cols": [
+    "set_temp",
+    "chamber",
+    "pig_id",
+    "pig_class",
+    "sick",
+    "disease"
+  ],
+  "drivers": [
+    "outside_temp",
+    "outside_humidity",
+    "inside_temp",
+    "inside_humidity",
+    "ventilation",
+    "fan_rpm",
+    "fan_power_w",
+    "heating_value"
+  ],
+  "lags_cross": 4,
+  "feature_cols": [
+    "self_lag_1",
+    "self_lag_2",
+    "self_lag_3",
+    "self_lag_4",
+    "self_lag_5",
+    "self_lag_6",
+    "self_lag_7",
+    "self_lag_8",
+    "self_lag_9",
+    "self_lag_10",
+    "self_lag_11",
+    "self_lag_12",
+    "self_lag_13",
+    "self_lag_14",
+    "self_lag_15",
+    "self_lag_16",
+    "self_lag_17",
+    "self_lag_18",
+    "self_lag_19",
+    "self_lag_20",
+    "self_lag_21",
+    "self_lag_22",
+    "self_lag_23",
+    "self_lag_24",
+    "self_lag_25",
+    "self_lag_26",
+    "self_lag_27",
+    "self_lag_28",
+    "self_lag_29",
+    "self_lag_30",
+    "self_lag_31",
+    "self_lag_32",
+    "self_sma_4",
+    "self_std_4",
+    "self_sma_8",
+    "self_std_8",
+    "self_sma_16",
+    "self_std_16",
+    "self_sma_32",
+    "self_std_32",
+    "outside_temp_lag_1",
+    "outside_temp_lag_2",
+    "outside_temp_lag_3",
+    "outside_temp_lag_4",
+    "outside_humidity_lag_1",
+    "outside_humidity_lag_2",
+    "outside_humidity_lag_3",
+    "outside_humidity_lag_4",
+    "inside_temp_lag_1",
+    "inside_temp_lag_2",
+    "inside_temp_lag_3",
+    "inside_temp_lag_4",
+    "inside_humidity_lag_1",
+    "inside_humidity_lag_2",
+    "inside_humidity_lag_3",
+    "inside_humidity_lag_4",
+    "ventilation_lag_1",
+    "ventilation_lag_2",
+    "ventilation_lag_3",
+    "ventilation_lag_4",
+    "fan_rpm_lag_1",
+    "fan_rpm_lag_2",
+    "fan_rpm_lag_3",
+    "fan_rpm_lag_4",
+    "fan_power_w_lag_1",
+    "fan_power_w_lag_2",
+    "fan_power_w_lag_3",
+    "fan_power_w_lag_4",
+    "heating_value_lag_1",
+    "heating_value_lag_2",
+    "heating_value_lag_3",
+    "heating_value_lag_4",
+    "hod_sin",
+    "hod_cos",
+    "dow_sin",
+    "dow_cos",
+    "var_id_0",
+    "var_id_1",
+    "var_id_2",
+    "var_id_3",
+    "var_id_4",
+    "var_id_5",
+    "var_id_6",
+    "var_id_7",
+    "var_id_8",
+    "var_id_9",
+    "var_id_10",
+    "var_id_11",
+    "var_id_12",
+    "var_id_13",
+    "var_id_14",
+    "var_id_15",
+    "var_id_16",
+    "h_1",
+    "h_2",
+    "h_4",
+    "h_8",
+    "h_12"
+  ],
+  "driver_feat_cols": [
+    "outside_temp_lag_1",
+    "outside_temp_lag_2",
+    "outside_temp_lag_3",
+    "outside_temp_lag_4",
+    "outside_humidity_lag_1",
+    "outside_humidity_lag_2",
+    "outside_humidity_lag_3",
+    "outside_humidity_lag_4",
+    "inside_temp_lag_1",
+    "inside_temp_lag_2",
+    "inside_temp_lag_3",
+    "inside_temp_lag_4",
+    "inside_humidity_lag_1",
+    "inside_humidity_lag_2",
+    "inside_humidity_lag_3",
+    "inside_humidity_lag_4",
+    "ventilation_lag_1",
+    "ventilation_lag_2",
+    "ventilation_lag_3",
+    "ventilation_lag_4",
+    "fan_rpm_lag_1",
+    "fan_rpm_lag_2",
+    "fan_rpm_lag_3",
+    "fan_rpm_lag_4",
+    "fan_power_w_lag_1",
+    "fan_power_w_lag_2",
+    "fan_power_w_lag_3",
+    "fan_power_w_lag_4",
+    "heating_value_lag_1",
+    "heating_value_lag_2",
+    "heating_value_lag_3",
+    "heating_value_lag_4"
+  ],
+  "time_feat_cols": [
+    "hod_sin",
+    "hod_cos",
+    "dow_sin",
+    "dow_cos"
+  ],
+  "split_ts": "2023-10-22 00:00:00",
+  "var_map": {
+    "evaporation": 0,
+    "T_0.5": 1,
+    "RH_0.5": 2,
+    "CO2_0.5": 3,
+    "NH3_0.5": 4,
+    "T_1.5": 5,
+    "RH_1.5": 6,
+    "CO2_1.5": 7,
+    "NH3_1.5": 8,
+    "fan_rpm": 9,
+    "fan_power_w": 10,
+    "ventilation": 11,
+    "heating_value": 12,
+    "outside_temp": 13,
+    "inside_temp": 14,
+    "outside_humidity": 15,
+    "inside_humidity": 16
+  },
+  "var_target_stats": {
+    "evaporation": {
+      "mean": 60.493077831040054,
+      "std": 20.57286549882527
+    },
+    "T_0.5": {
+      "mean": 25.57110005219711,
+      "std": 0.7276996410515949
+    },
+    "RH_0.5": {
+      "mean": 32.05765700385827,
+      "std": 5.806393158001607
+    },
+    "CO2_0.5": {
+      "mean": 824.027958801984,
+      "std": 164.48447664676286
+    },
+    "NH3_0.5": {
+      "mean": 11.579030444800644,
+      "std": 2.4416934967173485
+    },
+    "T_1.5": {
+      "mean": 26.08604119181244,
+      "std": 0.7148439877655886
+    },
+    "RH_1.5": {
+      "mean": 19.836347949591655,
+      "std": 5.393940347032215
+    },
+    "CO2_1.5": {
+      "mean": 851.6921770328239,
+      "std": 164.72177016243614
+    },
+    "NH3_1.5": {
+      "mean": 5.665164431115751,
+      "std": 3.314522121268544
+    },
+    "fan_rpm": {
+      "mean": 893.9673604797603,
+      "std": 157.9247744727253
+    },
+    "fan_power_w": {
+      "mean": 119.81369391503952,
+      "std": 32.08243271589423
+    },
+    "ventilation": {
+      "mean": 2.0280984083718976,
+      "std": 0.44302790651442064
+    },
+    "heating_value": {
+      "mean": 884.0743563921503,
+      "std": 98.45819660522676
+    },
+    "outside_temp": {
+      "mean": 18.149415380343193,
+      "std": 3.118473850661003
+    },
+    "inside_temp": {
+      "mean": 25.603292225210584,
+      "std": 0.8643828521675839
+    },
+    "outside_humidity": {
+      "mean": 61.54615567770685,
+      "std": 7.753822775323706
+    },
+    "inside_humidity": {
+      "mean": 44.2979995015074,
+      "std": 8.079718460028902
+    }
+  },
+  "xgb_params": {
+    "objective": "reg:squarederror",
+    "eval_metric": "rmse",
+    "tree_method": "hist",
+    "device": "cuda:0",
+    "max_depth": 8,
+    "eta": 0.05,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "lambda": 1.0,
+    "seed": 42
+  },
+  "num_boost_round": 1200
+}

@@ -3,7 +3,7 @@ import pandas as pd
 import sqlalchemy as sa
 import requests
 from datetime import datetime
-import plotly.express as px
+import plotly.express as px  # Plotly import 확인
 import numpy as np
 import os
 import joblib
@@ -38,13 +38,12 @@ def init_db_connection():
 # -----------------------------------------------------------------
 @st.cache_data(ttl=600)
 def load_data_from_db(_engine, table_name, limit=1000, order_by_col='timestamp'):
-    """DB에서 데이터를 로드하는 범용 함수 (★수정★: 델타 로직 제거, 원래대로 복원)"""
+    """DB에서 데이터를 로드하는 범용 함수"""
     if _engine is None:
         return pd.DataFrame()
     try:
         order_clause = f"ORDER BY {order_by_col} DESC" if order_by_col else ""
 
-        # 'None' 문자열이 아닌 진짜 None 타입으로 limit 처리
         if limit == 'None' or limit is None:
             limit_clause = ""
         else:
@@ -107,10 +106,8 @@ if 'view_mode' not in st.session_state:
 
 # --- 1. 모든 원본 데이터 로드 ---
 engine = init_db_connection()
-# (★수정★) limit 원래대로 복원
 sensor_df_all = load_data_from_db(engine, 'Chamber_Logs', limit=20000)
 equipment_df_all = load_data_from_db(engine, 'Equipment_Logs', limit=20000)
-weather_ultra_fcst_df = load_data_from_db(engine, "weather_ultra_fcst", limit=48, order_by_col="fcst_dt")
 
 pig_log_df_all = load_data_from_db(engine, 'Pig_Logs', limit='None', order_by_col='timestamp')
 chambers_df = load_data_from_db(engine, 'Chambers', limit='None', order_by_col=None)
@@ -144,8 +141,6 @@ if st.session_state.view_mode == 'overview':
 
     with st.container(border=True):
         st.subheader(" AICU 총괄 요약")
-
-        # --- (★수정★) 델타 계산 로직 삭제, 원래 로직으로 복원 ---
         cols = st.columns(5)
 
         if not pig_log_df_all.empty:
@@ -162,7 +157,6 @@ if st.session_state.view_mode == 'overview':
         else:
             cols[1].metric("총 '주의' 개체 수", "N/A")
 
-        # ✅ [수정] 3. '현재 외부 날씨' (시간별 DB 데이터 사용)
         if not weather_ultra_fcst_df.empty and {"T1H", "REH"}.issubset(weather_ultra_fcst_df.columns):
             latest_weather = weather_ultra_fcst_df.iloc[0]  # 가장 최신 시간
             cols[2].metric("현재 외부 온도", f"{latest_weather.get('T1H', 0):.1f} °C")
@@ -171,7 +165,6 @@ if st.session_state.view_mode == 'overview':
             cols[2].metric("현재 외부 온도", "N/A")
             cols[3].metric("현재 외부 습도", "N/A")
 
-        # ✅ [수정] 4. '오늘 강수 확률' (일일 요약 DB 데이터 사용)
         if not mid_land_fcst_df.empty and {"pop_am", "pop_pm"}.issubset(mid_land_fcst_df.columns):
             today_weather = mid_land_fcst_df.iloc[0]  # 오늘 예보
             pop_am = today_weather.get("pop_am", 0)  # 오전 강수 확률
@@ -259,7 +252,6 @@ elif st.session_state.view_mode == 'detail':
         if not sensor_df_filtered.empty:
             latest_sensor = sensor_df_filtered.iloc[0]
             c1, c2, c3 = st.columns(3)
-            # (★수정★) 가짜 델타 제거
             c1.metric("온도", f"{latest_sensor['temperature']:.1f} °C")
             c2.metric("습도", f"{latest_sensor['humidity']:.1f} %")
             c3.metric("CO2", f"{latest_sensor['co2']:.0f} ppm")
@@ -328,10 +320,7 @@ elif st.session_state.view_mode == 'detail':
 
     st.divider()
 
-    # ✅ [신규] 챔버 외부 날씨 (시간별 상세 예보 DB)
     st.header("🌦️ 챔버 외부 날씨 (기상청 DB)")
-
-    # (대문자로 변환된 컬럼명 사용)
     needed_weather_cols = {"FCST_DT", "T1H", "REH", "RN1", "SKY", "PTY"}
 
     if not weather_ultra_fcst_df.empty and needed_weather_cols.issubset(weather_ultra_fcst_df.columns):
@@ -345,7 +334,9 @@ elif st.session_state.view_mode == 'detail':
         with w_tab2:
             st.plotly_chart(px.line(weather_chart_data, y='REH', title='시간별 외부 습도'), use_container_width=True)
         with w_tab3:
-            st.plotly_chart(px.bar(weather_chart_data, y='RN1', title='시간별 강수량'), use_container_width=True)
+            # RN1(강수량)이 '강수없음' 등 문자열일 수 있으므로 숫자 변환
+            weather_chart_data['RN1_NUMERIC'] = pd.to_numeric(weather_chart_data['RN1'], errors='coerce').fillna(0)
+            st.plotly_chart(px.bar(weather_chart_data, y='RN1_NUMERIC', title='시간별 강수량(mm)'), use_container_width=True)
 
         latest_sky = weather_ultra_fcst_df.iloc[0].get("SKY", -1)
         st.info(f"참고: 현재 하늘 상태(SKY) 코드는 '{latest_sky}'입니다. (1: 맑음, 3: 구름많음, 4: 흐림)")
@@ -494,11 +485,27 @@ elif st.session_state.view_mode == 'detail':
         col2.metric("정상 확률", "90 %")
 
         st.subheader("AI 판단 근거 (XAI Mock-up)")
+        
+        # --- (★NEW★) st.bar_chart -> px.bar로 수정 ---
         shap_values = pd.DataFrame({
             '영향력': [0.12, 0.05, -0.08],
-            '색상': ['blue', 'blue', 'red']
-        }, index=['온도(긍정)', '습도(긍정)', 'CO2(부정)'])
-        st.bar_chart(shap_values, y='영향력', color='색상')
+            '변수': ['온도(긍정)', '습도(긍정)', 'CO2(부정)']
+        })
+        # Plotly를 사용하여 색상을 명시적으로 제어
+        color_map = {'온도(긍정)': 'blue', '습도(긍정)': 'blue', 'CO2(부정)': 'red'}
+        fig_shap = px.bar(
+            shap_values, 
+            x='변수', 
+            y='영향력', 
+            color='변수', 
+            color_discrete_map=color_map, # 색상 매핑 적용
+            title='AI 예측에 대한 각 변수의 영향력',
+            labels={'변수': '변수', '영향력': '영향력'},
+            category_orders={"변수": ['온도(긍정)', '습도(긍정)', 'CO2(부정)']} # 순서 고정
+        )
+        st.plotly_chart(fig_shap, use_container_width=True)
+        # --- 수정 완료 ---
+        
         st.info("파란색 막대는 '정상' 예측에 긍정적인 영향을, 빨간색 막대는 부정적인 영향을 준 요인입니다.")
 
     elif not sensor_df_filtered.empty:

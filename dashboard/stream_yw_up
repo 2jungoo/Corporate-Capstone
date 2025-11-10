@@ -38,16 +38,25 @@ def init_db_connection():
 # -----------------------------------------------------------------
 @st.cache_data(ttl=600)
 def load_data_from_db(_engine, table_name, limit=1000, order_by_col='timestamp'):
-    """DB에서 데이터를 로드하는 범용 함수"""
+    """DB에서 데이터를 로드하는 범용 함수 (★수정★: 델타 로직 제거, 원래대로 복원)"""
     if _engine is None:
         return pd.DataFrame()
     try:
         order_clause = f"ORDER BY {order_by_col} DESC" if order_by_col else ""
-        limit_clause = f"LIMIT {limit}" if limit else ""
+
+        # 'None' 문자열이 아닌 진짜 None 타입으로 limit 처리
+        if limit == 'None' or limit is None:
+            limit_clause = ""
+        else:
+            limit_clause = f"LIMIT {limit}"
+
         query = f"SELECT * FROM {table_name} {order_clause} {limit_clause}"
+
         df = pd.read_sql(query, con=_engine)
         if 'timestamp' in df.columns:
             df['timestamp'] = pd.to_datetime(df['timestamp'])
+        elif 'fcst_dt' in df.columns:  # 날씨 테이블용
+            df['fcst_dt'] = pd.to_datetime(df['fcst_dt'])
         return df
     except Exception as e:
         st.error(f"'{table_name}' 데이터 로드 오류: {e}")
@@ -117,18 +126,20 @@ if 'view_mode' not in st.session_state:
 
 # --- 1. 모든 원본 데이터 로드 ---
 engine = init_db_connection()
+# (★수정★) limit 원래대로 복원
 sensor_df_all = load_data_from_db(engine, 'Chamber_Logs', limit=20000)
-pig_log_df_all = load_data_from_db(engine, 'Pig_Logs', limit=None)
+equipment_df_all = load_data_from_db(engine, 'Equipment_Logs', limit=20000)
+weather_ultra_fcst_df = load_data_from_db(engine, "weather_ultra_fcst", limit=48, order_by_col="fcst_dt")
+
+pig_log_df_all = load_data_from_db(engine, 'Pig_Logs', limit='None', order_by_col='timestamp')
+chambers_df = load_data_from_db(engine, 'Chambers', limit='None', order_by_col=None)
+pigs_df = load_data_from_db(engine, 'Pigs', limit='None', order_by_col=None)
+
+weather_df = get_weather_forecast()
 
 if 'weight_kg' in pig_log_df_all.columns:
     pig_log_df_all['weight_kg'] = pd.to_numeric(pig_log_df_all['weight_kg'], errors='coerce')
 
-equipment_df_all = load_data_from_db(engine, 'Equipment_Logs', limit=20000)
-weather_df = get_weather_forecast()
-chambers_df = load_data_from_db(engine, 'Chambers', limit=100, order_by_col=None)
-pigs_df = load_data_from_db(engine, 'Pigs', limit=5000, order_by_col=None)
-
-weather_ultra_fcst_df = load_data_from_db(engine, "weather_ultra_fcst", limit=48, order_by_col="fcst_dt")
 if not weather_ultra_fcst_df.empty:
     weather_ultra_fcst_df.columns = [col.upper() for col in weather_ultra_fcst_df.columns]
 
@@ -141,11 +152,13 @@ if st.session_state.view_mode == 'overview':
 
     with st.container(border=True):
         st.subheader(" AICU 총괄 요약")
+
+        # --- (★수정★) 델타 계산 로직 삭제, 원래 로직으로 복원 ---
         cols = st.columns(5)
 
         if not pig_log_df_all.empty:
             total_pigs = len(pig_log_df_all['pig_id'].unique())
-            cols[0].metric("총 사육 두수", f"{total_pigs} 마리", delta="5 마리")
+            cols[0].metric("총 사육 두수", f"{total_pigs} 마리")
         else:
             cols[0].metric("총 사육 두수", "N/A (로그 없음)")
 
@@ -153,15 +166,15 @@ if st.session_state.view_mode == 'overview':
             latest_pig_logs = pig_log_df_all.loc[pig_log_df_all.groupby('pig_id')['timestamp'].idxmax()]
             warning_pigs = latest_pig_logs[
                 (latest_pig_logs['temp_rectal'] > 40) | (latest_pig_logs['breath_rate'] > 50)]
-            cols[1].metric("총 '주의' 개체 수", f"{len(warning_pigs)} 마리", delta=f"{1} 마리", delta_color="inverse")
+            cols[1].metric("총 '주의' 개체 수", f"{len(warning_pigs)} 마리")
         else:
             cols[1].metric("총 '주의' 개체 수", "N/A")
 
         if not sensor_df_all.empty:
             avg_temp = sensor_df_all['temperature'].mean()
             avg_humi = sensor_df_all['humidity'].mean()
-            cols[2].metric("전체 평균 온도", f"{avg_temp:.1f} °C", delta="-0.5 °C")
-            cols[3].metric("전체 평균 습도", f"{avg_humi:.1f} %", delta="2 %")
+            cols[2].metric("전체 평균 온도", f"{avg_temp:.1f} °C")
+            cols[3].metric("전체 평균 습도", f"{avg_humi:.1f} %")
         else:
             cols[2].metric("전체 평균 온도", "N/A");
             cols[3].metric("전체 평균 습도", "N/A")
@@ -209,7 +222,7 @@ if st.session_state.view_mode == 'overview':
 
                 chamber_sensor_data = sensor_df_all[sensor_df_all['chamber_id'] == chamber_id]
                 if not chamber_sensor_data.empty:
-                    c1_metric.metric("현재 온도", f"{chamber_sensor_data.iloc[0]['temperature']:.1f} °C", delta="-0.2 °C")
+                    c1_metric.metric("현재 온도", f"{chamber_sensor_data.iloc[0]['temperature']:.1f} °C")
                 else:
                     c1_metric.metric("현재 온도", "N/A")
 
@@ -250,9 +263,10 @@ elif st.session_state.view_mode == 'detail':
         if not sensor_df_filtered.empty:
             latest_sensor = sensor_df_filtered.iloc[0]
             c1, c2, c3 = st.columns(3)
-            c1.metric("온도", f"{latest_sensor['temperature']:.1f} °C", delta="-0.2 °C")
-            c2.metric("습도", f"{latest_sensor['humidity']:.1f} %", delta="1.5%")
-            c3.metric("CO2", f"{latest_sensor['co2']:.0f} ppm", delta="50 ppm", delta_color="inverse")
+            # (★수정★) 가짜 델타 제거
+            c1.metric("온도", f"{latest_sensor['temperature']:.1f} °C")
+            c2.metric("습도", f"{latest_sensor['humidity']:.1f} %")
+            c3.metric("CO2", f"{latest_sensor['co2']:.0f} ppm")
 
             min_date = sensor_df_filtered['timestamp'].min().date()
             max_date = sensor_df_filtered['timestamp'].max().date()
@@ -385,7 +399,6 @@ elif st.session_state.view_mode == 'detail':
         else:
             st.warning("몸무게 데이터가 없어 계산할 수 없습니다.")
 
-    # --- (★수정★) '에너지 사용량' 탭 수정 ---
     with tab2:
         if not equipment_df_filtered.empty:
             min_date_eq = equipment_df_filtered['timestamp'].min().date()
@@ -397,7 +410,7 @@ elif st.session_state.view_mode == 'detail':
                 min_value=min_date_eq,
                 max_value=max_date_eq,
                 key=f"energy_date_selector_{selected_id}"
-            )  # <-- (★NEW★) 괄호 추가됨
+            )
 
             energy_data_filtered_by_date = pd.DataFrame()
             start_date_str = min_date_eq.isoformat()

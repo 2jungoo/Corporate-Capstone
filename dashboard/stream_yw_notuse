@@ -1,0 +1,365 @@
+import streamlit as st
+import pandas as pd
+import sqlalchemy
+import requests
+import plotly.express as px
+from datetime import datetime
+
+# -----------------------------------------------------------------
+# 1) DB 연결 (secrets.toml 없으면 조용히 비활성)
+# -----------------------------------------------------------------
+def get_db_connection():
+    try:
+        db_info = st.secrets["database"]
+        engine_url = (
+            f"mysql+mysqlconnector://{db_info['user']}:{db_info['password']}@"
+            f"{db_info['host']}:{db_info['port']}/{db_info['db_name']}"
+        )
+        engine = sqlalchemy.create_engine(engine_url, pool_pre_ping=True)
+        return engine
+    except Exception:
+        st.info("DB 비사용 모드: .streamlit/secrets.toml의 [database] 설정이 없거나 연결 실패")
+        return None
+
+@st.cache_resource
+def init_db_connection():
+    return get_db_connection()
+
+
+# -----------------------------------------------------------------
+# 2) 데이터 로드 & 날씨
+# -----------------------------------------------------------------
+@st.cache_data(ttl=600)
+def load_data_from_db(_engine, table_name, limit=1000, order_by_col="timestamp"):
+    if _engine is None:
+        return pd.DataFrame()
+    try:
+        order_clause = f"ORDER BY {order_by_col} DESC" if order_by_col else ""
+        limit_clause = f"LIMIT {limit}" if limit else ""
+        query = f"SELECT * FROM {table_name} {order_clause} {limit_clause}"
+        df = pd.read_sql(query, con=_engine)
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+        return df
+    except Exception as e:
+        st.error(f"'{table_name}' 데이터 로드 오류: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def get_weather_forecast():
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": 37.5665,
+        "longitude": 126.9780,
+        "daily": "precipitation_probability_max",
+        "timezone": "Asia/Seoul",
+    }
+    try:
+        r = requests.get(url, params=params, timeout=5)
+        r.raise_for_status()
+        data = r.json()
+        return pd.DataFrame({
+            "날짜": pd.to_datetime(data["daily"]["time"]),
+            "강수 확률 (%)": data["daily"]["precipitation_probability_max"],
+        })
+    except Exception as e:
+        st.error(f"날씨 정보 로드 오류: {e}")
+        return pd.DataFrame()
+
+
+# -----------------------------------------------------------------
+# 3) View 전환 상태
+# -----------------------------------------------------------------
+def set_detail_view(chamber_id, chamber_no):
+    st.session_state.view_mode = "detail"
+    st.session_state.selected_chamber_id = chamber_id
+    st.session_state.selected_chamber_no = chamber_no
+
+def set_overview_view():
+    st.session_state.view_mode = "overview"
+    st.session_state.selected_chamber_id = None
+    st.session_state.selected_chamber_no = None
+
+
+# -----------------------------------------------------------------
+# 4) 앱 설정/초기 로드
+# -----------------------------------------------------------------
+st.set_page_config(page_title="🐷 스마트 축사 대시보드", layout="wide")
+
+if "view_mode" not in st.session_state:
+    set_overview_view()
+
+engine = init_db_connection()
+sensor_df_all   = load_data_from_db(engine, "Chamber_Logs",   limit=20000)
+pig_log_df_all  = load_data_from_db(engine, "Pig_Logs",       limit=None)
+equipment_df_all= load_data_from_db(engine, "Equipment_Logs", limit=20000)
+weather_df      = get_weather_forecast()
+chambers_df     = load_data_from_db(engine, "Chambers",       limit=100, order_by_col=None)
+pigs_df         = load_data_from_db(engine, "Pigs",           limit=5000, order_by_col=None)
+
+# weight_kg 숫자 강제
+if not pig_log_df_all.empty and "weight_kg" in pig_log_df_all.columns:
+    pig_log_df_all["weight_kg"] = pd.to_numeric(pig_log_df_all["weight_kg"], errors="coerce")
+
+
+# =================================================================
+# A) 전체 맵 (Overview)
+# =================================================================
+if st.session_state.view_mode == "overview":
+    st.title("🐷 스마트 축사 현황 (전체 맵)")
+
+    # --- 총괄 요약 섹션 ---
+    with st.container(border=True):
+        st.subheader("AICU 총괄 요약")
+        cols = st.columns(5)
+
+        # 1. 'Pigs' (마스터 테이블) 기준 총 사육 두수
+        total_pigs_with_logs = len(pig_log_df_all["pig_id"].unique()) if not pig_log_df_all.empty and "pig_id" in pig_log_df_all.columns else 0
+        cols[0].metric("총 사육 두수", f"{total_pigs_with_logs} 마리")
+
+        # 2. '주의' 개체 수 계산
+        if not pig_log_df_all.empty and {"pig_id", "timestamp"}.issubset(pig_log_df_all.columns):
+            # 2-1. 각 돼지의 '가장 최신' 로그만 추출
+            latest_pig_logs = pig_log_df_all.sort_values("timestamp").groupby("pig_id").tail(1)
+
+            if {"temp_rectal", "breath_rate"}.issubset(latest_pig_logs.columns):
+                # 2-2. (필터링) 최신 로그 중, 체온>40 또는 호흡>50인 개체만 필터링
+                warning_pigs = latest_pig_logs[
+                    (latest_pig_logs["temp_rectal"] > 40) | (latest_pig_logs["breath_rate"] > 50)
+                    ]
+
+                # 2-3. (✅ 수정 완료) '주의' 개체로 '필터링된' 숫자(len(warning_pigs))를 출력
+                cols[1].metric("총 '주의' 개체 수", f"{len(warning_pigs)} 마리")
+            else:
+                cols[1].metric("총 '주의' 개체 수", "N/A (데이터 부족)")
+        else:
+            cols[1].metric("총 '주의' 개체 수", "N/A (로그 없음)")
+
+        if not sensor_df_all.empty and {"temperature","humidity"}.issubset(sensor_df_all.columns):
+            cols[2].metric("전체 평균 온도", f"{sensor_df_all['temperature'].mean():.1f} °C")
+            cols[3].metric("전체 평균 습도", f"{sensor_df_all['humidity'].mean():.1f} %")
+        else:
+            cols[2].metric("전체 평균 온도", "N/A")
+            cols[3].metric("전체 평균 습도", "N/A")
+
+        if not weather_df.empty:
+            today_prob = weather_df.iloc[0]["강수 확률 (%)"]
+            cols[4].metric("오늘 강수 확률", f"{today_prob:.0f} %")
+            if today_prob > 70:
+                st.warning("🚨 강수 확률이 70% 이상입니다! 환기/습도 관리 유의")
+        else:
+            cols[4].metric("오늘 강수 확률", "N/A")
+
+    st.divider()
+    st.subheader("챔버별 현황 (클릭하여 드릴다운)")
+
+    if chambers_df.empty:
+        st.info("챔버 정보 없음")
+    else:
+        grid = st.columns(2)
+        for i, row in chambers_df.iterrows():
+            chamber_id = row.get("chamber_id", row.get("id", i))
+            chamber_no = row.get("chamber_no", chamber_id)
+            col = grid[i % 2]
+
+            with col.container(border=True):
+                st.subheader(f"✅ {chamber_no}번 챔버")
+                m1, m2 = st.columns(2)
+
+                chamber_sensor = sensor_df_all[sensor_df_all.get("chamber_id", -1) == chamber_id]
+                if not chamber_sensor.empty and "temperature" in chamber_sensor.columns:
+                    cur_temp = float(chamber_sensor.sort_values("timestamp").tail(1)["temperature"].iloc[0])
+                    m1.metric("현재 온도", f"{cur_temp:.1f} °C")
+                else:
+                    m1.metric("현재 온도", "N/A")
+
+                if not pigs_df.empty and not pig_log_df_all.empty and "pig_id" in pigs_df.columns:
+                    pigs_in = pigs_df[pigs_df.get("chamber_id", -1) == chamber_id]["pig_id"]
+                    pig_logs_in = pig_log_df_all[pig_log_df_all["pig_id"].isin(pigs_in)]
+                    if not pig_logs_in.empty and {"temp_rectal","breath_rate","timestamp"}.issubset(pig_logs_in.columns):
+                        latest = pig_logs_in.sort_values("timestamp").groupby("pig_id").tail(1)
+                        warn = latest[(latest["temp_rectal"] > 40) | (latest["breath_rate"] > 50)]
+                        m2.metric("건강 '주의' 개체", f"{len(warn)} 마리")
+                    else:
+                        m2.metric("건강 '주의' 개체", "0 마리")
+                else:
+                    m2.metric("건강 '주의' 개체", "N/A")
+
+                st.button(
+                    f"{chamber_no}번 챔버 상세 정보 보기",
+                    key=f"btn_detail_{chamber_id}",
+                    on_click=set_detail_view,
+                    args=(chamber_id, chamber_no),
+                )
+
+
+# =================================================================
+# B) 챔버 상세 (Detail)
+# =================================================================
+elif st.session_state.view_mode == "detail":
+
+    st.button("◀ 전체 맵으로 돌아가기", on_click=set_overview_view)
+    selected_id = st.session_state.selected_chamber_id
+    selected_no = st.session_state.selected_chamber_no
+    st.title(f"🐷 {selected_no}번 챔버 상세 정보")
+
+    sensor_df_filtered    = sensor_df_all[sensor_df_all.get("chamber_id", -1) == selected_id]
+    equipment_df_filtered = equipment_df_all[equipment_df_all.get("chamber_id", -1) == selected_id]
+
+    if not pigs_df.empty and "pig_id" in pigs_df.columns:
+        pigs_in_chamber = pigs_df[pigs_df.get("chamber_id", -1) == selected_id]["pig_id"]
+        pig_log_df_filtered = pig_log_df_all[pig_log_df_all["pig_id"].isin(pigs_in_chamber)]
+    else:
+        pig_log_df_filtered = pd.DataFrame()
+
+    st.divider()
+    st.header("📈 현재 챔버 상황")
+    col1, col2 = st.columns(2)
+
+    # ---------------- 환경 센서 (KPI + 기간 캘린더 + 그래프) ----------------
+    with col1:
+        st.subheader("📊 환경 센서 (Chamber_Logs)")
+        needed = {"timestamp","temperature","humidity","co2"}
+        if not sensor_df_filtered.empty and needed.issubset(sensor_df_filtered.columns):
+            # 최근 KPI 3개
+            latest = sensor_df_filtered.sort_values("timestamp").tail(1).iloc[0]
+            a, b, c = st.columns(3)
+            a.metric("온도", f"{latest['temperature']:.1f} °C")
+            b.metric("습도", f"{latest['humidity']:.1f} %")
+            c.metric("CO₂",  f"{latest['co2']:.0f} ppm")
+
+            # ✅ 여기! 온/습/CO₂ 라인 그래프 위에 "기간 선택" 캘린더
+            dmin = pd.to_datetime(sensor_df_filtered["timestamp"].min()).date()
+            dmax = pd.to_datetime(sensor_df_filtered["timestamp"].max()).date()
+
+            date_range = st.date_input(
+                "기간 선택",
+                value=(dmin, dmax),
+                min_value=dmin,
+                max_value=dmax,
+                key=f"env_range_{selected_id}"
+            )
+
+            if isinstance(date_range, tuple) and len(date_range) == 2:
+                start = pd.to_datetime(date_range[0])
+                end   = pd.to_datetime(date_range[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            else:
+                start = pd.to_datetime(dmin)
+                end   = pd.to_datetime(dmax)
+
+            seg = sensor_df_filtered[
+                (sensor_df_filtered["timestamp"] >= start) &
+                (sensor_df_filtered["timestamp"] <= end)
+            ].copy()
+
+            if seg.empty:
+                st.info("선택한 기간에 데이터가 없습니다.")
+            else:
+                t1, t2, t3 = st.tabs(["🌡️ 온도", "💧 습도", "💨 CO₂"])
+                with t1:
+                    st.line_chart(seg.set_index("timestamp")[["temperature"]])
+                with t2:
+                    st.line_chart(seg.set_index("timestamp")[["humidity"]])
+                with t3:
+                    st.line_chart(seg.set_index("timestamp")[["co2"]])
+        else:
+            st.warning("센서 데이터(temperature/humidity/co2)가 부족합니다.")
+
+    # ---------------- 돼지 건강 ----------------
+    with col2:
+        st.subheader("❤️ 돼지 건강 상태 (Pig_Logs)")
+        if not pig_log_df_filtered.empty and {"pig_id","timestamp"}.issubset(pig_log_df_filtered.columns):
+            latest = pig_log_df_filtered.sort_values("timestamp").groupby("pig_id").tail(1)
+            warn = pd.DataFrame()
+            if {"temp_rectal","breath_rate"}.issubset(latest.columns):
+                warn = latest[(latest["temp_rectal"] > 40) | (latest["breath_rate"] > 50)]
+            st.metric("건강 '주의' 개체", f"{len(warn)} 마리")
+            if len(warn) > 0:
+                with st.expander("'주의' 개체 목록 보기"):
+                    st.dataframe(warn[["pig_id","temp_rectal","breath_rate"]])
+        else:
+            st.info("돼지 로그 데이터가 부족합니다.")
+
+    st.divider()
+
+    # ---------------- 출하 및 에너지 분석 ----------------
+    st.header("🐖 출하 및 에너지 분석")
+    tab1, tab2 = st.tabs(["출하 날짜 예측", "에너지 사용량 분석"])
+
+    # ✅ 네가 준 '출하' 로직 그대로
+    with tab1:
+        target_weight = st.number_input(
+            "목표 출하 체중(kg)을 입력하세요:",
+            min_value=80.0, value=80.0, step=1.0,
+            help="이 체중을 기준으로 출하 가능 개체 수와 예측 날짜를 계산합니다."
+        )
+
+        if not pig_log_df_filtered.empty:
+            logs_with_weights = (
+                pig_log_df_filtered.dropna(subset=["weight_kg"])
+                if "weight_kg" in pig_log_df_filtered.columns else pd.DataFrame()
+            )
+
+            if not logs_with_weights.empty:
+                latest_weights = logs_with_weights.loc[
+                    logs_with_weights.groupby("pig_id")["timestamp"].idxmax()
+                ]
+
+                ship_ready_now = latest_weights[latest_weights["weight_kg"] >= target_weight]
+
+                c1, c2 = st.columns(2)
+                c1.metric(f"현재 {target_weight}kg 이상 (출하 가능)", f"{len(ship_ready_now)} 마리")
+                c2.metric("1주일 내 출하 가능 (Mock)", f"{int(len(ship_ready_now) * 0.5) + 2} 마리 (Mock)")
+                st.divider()
+
+                st.subheader(f"🐷 {target_weight}kg 도달 날짜 예측 (AI Mock-up)")
+
+                pigs_below = latest_weights[latest_weights["weight_kg"] < target_weight]
+                if not pigs_below.empty:
+                    rep = pigs_below.sort_values("weight_kg", ascending=False).iloc[0]
+                    cur_w = rep["weight_kg"]
+                    gap   = target_weight - cur_w
+                    ADG   = 0.7  # 가정: 일일 증체량
+                    days  = gap / ADG
+                    pred  = pd.Timestamp.now() + pd.Timedelta(days=days)
+
+                    st.write(f"**대표 개체 (Pig ID: {rep['pig_id']}) 분석:**")
+                    st.info(f"현재 {cur_w:.1f}kg → {target_weight:.1f}kg까지 **약 {days:.0f}일** 예상")
+                    st.metric(f"{target_weight}kg 예상 도달 날짜", pred.strftime("%Y-%m-%d"))
+                else:
+                    st.success(f"데이터가 있는 모든 개체가 이미 목표 체중({target_weight}kg) 이상입니다.")
+            else:
+                st.warning("이 챔버에는 현재 유효한 체중 데이터가 없습니다.")
+        else:
+            st.warning("몸무게 데이터가 없어 계산할 수 없습니다.")
+
+    # ✅ 네가 준 '에너지' 로직 그대로
+    with tab2:
+        if not equipment_df_filtered.empty:
+            total_usage = equipment_df_filtered.groupby("equipment_type")["power_usage_wh"].sum() / 1000.0
+            st.bar_chart(total_usage.rename("총 사용량 (kWh)"))
+        else:
+            st.warning("에너지 사용량 데이터가 없습니다.")
+
+    st.divider()
+
+    # ---------------- AI 예측 (Mock) ----------------
+    st.header("🤖 AI 예측 결과 (현재 개발 중)")
+
+    def get_fake_prediction(features):
+        return "정상 출하", 0.90
+
+    if not sensor_df_filtered.empty and {"temperature","humidity"}.issubset(sensor_df_filtered.columns):
+        latest_data = sensor_df_filtered.sort_values("timestamp").tail(1).iloc[0]
+        pred, proba = get_fake_prediction({"temperature": latest_data["temperature"], "humidity": latest_data["humidity"]})
+        s1, s2 = st.columns(2)
+        s1.metric("예측 결과", pred)
+        s2.metric("정상 확률", f"{proba*100:.0f} %")
+    else:
+        st.info("센서 데이터가 없어 AI 예측 UI를 표시하지 않습니다.")
+
+
+# -----------------------------------------------------------------
+# 끝
+# -----------------------------------------------------------------
+st.caption("프리캡스톤 | 환경 센서 섹션에 기간 캘린더 포함 | 출하/에너지 분석은 사용자 버전 고정 | MySQL 연동은 secrets.toml이 있을 때 활성화")

@@ -128,7 +128,6 @@ weather_df = get_weather_forecast()
 chambers_df = load_data_from_db(engine, 'Chambers', limit=100, order_by_col=None)
 pigs_df = load_data_from_db(engine, 'Pigs', limit=5000, order_by_col=None)
 
-# 외부 날씨 DB 데이터도 로드
 weather_ultra_fcst_df = load_data_from_db(engine, "weather_ultra_fcst", limit=48, order_by_col="fcst_dt")
 if not weather_ultra_fcst_df.empty:
     weather_ultra_fcst_df.columns = [col.upper() for col in weather_ultra_fcst_df.columns]
@@ -140,14 +139,13 @@ if st.session_state.view_mode == 'overview':
 
     st.title("🐷 스마트 축사 현황 (전체 맵)")
 
-    # --- 총괄 요약 섹션 ---
     with st.container(border=True):
         st.subheader(" AICU 총괄 요약")
         cols = st.columns(5)
 
         if not pig_log_df_all.empty:
             total_pigs = len(pig_log_df_all['pig_id'].unique())
-            cols[0].metric("총 사육 두수", f"{total_pigs} 마리", delta="5 마리")  # (Mock Delta)
+            cols[0].metric("총 사육 두수", f"{total_pigs} 마리", delta="5 마리")
         else:
             cols[0].metric("총 사육 두수", "N/A (로그 없음)")
 
@@ -155,16 +153,15 @@ if st.session_state.view_mode == 'overview':
             latest_pig_logs = pig_log_df_all.loc[pig_log_df_all.groupby('pig_id')['timestamp'].idxmax()]
             warning_pigs = latest_pig_logs[
                 (latest_pig_logs['temp_rectal'] > 40) | (latest_pig_logs['breath_rate'] > 50)]
-            cols[1].metric("총 '주의' 개체 수", f"{len(warning_pigs)} 마리", delta=f"{1} 마리",
-                           delta_color="inverse")  # (Mock Delta)
+            cols[1].metric("총 '주의' 개체 수", f"{len(warning_pigs)} 마리", delta=f"{1} 마리", delta_color="inverse")
         else:
             cols[1].metric("총 '주의' 개체 수", "N/A")
 
         if not sensor_df_all.empty:
             avg_temp = sensor_df_all['temperature'].mean()
             avg_humi = sensor_df_all['humidity'].mean()
-            cols[2].metric("전체 평균 온도", f"{avg_temp:.1f} °C", delta="-0.5 °C")  # (Mock Delta)
-            cols[3].metric("전체 평균 습도", f"{avg_humi:.1f} %", delta="2 %")  # (Mock Delta)
+            cols[2].metric("전체 평균 온도", f"{avg_temp:.1f} °C", delta="-0.5 °C")
+            cols[3].metric("전체 평균 습도", f"{avg_humi:.1f} %", delta="2 %")
         else:
             cols[2].metric("전체 평균 온도", "N/A");
             cols[3].metric("전체 평균 습도", "N/A")
@@ -179,7 +176,6 @@ if st.session_state.view_mode == 'overview':
 
     st.divider()
 
-    # --- 챔버 목록 (2열 그리드) ---
     st.subheader("챔버별 현황 (클릭하여 드릴다운)")
 
     if chambers_df.empty:
@@ -192,7 +188,6 @@ if st.session_state.view_mode == 'overview':
             chamber_no = row['chamber_no']
             current_col = grid_cols[i % 2]
 
-            # '주의' 개체 수 먼저 계산
             warn_count = 0
             if not pigs_df.empty and not pig_log_df_all.empty:
                 pigs_in_chamber_ids = pigs_df[pigs_df['chamber_id'] == chamber_id]['pig_id']
@@ -205,7 +200,6 @@ if st.session_state.view_mode == 'overview':
                     warn_count = len(warning_pigs)
 
             with current_col.container(border=True):
-                # '주의' 개체 수에 따라 제목 색상 변경
                 if warn_count > 0:
                     st.error(f"🚨 {chamber_no}번 챔버 (주의!)")
                 else:
@@ -215,8 +209,7 @@ if st.session_state.view_mode == 'overview':
 
                 chamber_sensor_data = sensor_df_all[sensor_df_all['chamber_id'] == chamber_id]
                 if not chamber_sensor_data.empty:
-                    c1_metric.metric("현재 온도", f"{chamber_sensor_data.iloc[0]['temperature']:.1f} °C",
-                                     delta="-0.2 °C")  # (Mock Delta)
+                    c1_metric.metric("현재 온도", f"{chamber_sensor_data.iloc[0]['temperature']:.1f} °C", delta="-0.2 °C")
                 else:
                     c1_metric.metric("현재 온도", "N/A")
 
@@ -240,7 +233,6 @@ elif st.session_state.view_mode == 'detail':
     selected_no = st.session_state.selected_chamber_no
     st.title(f"🐷 {selected_no}번 챔버 상세 정보")
 
-    # --- 1. 이 챔버의 데이터만 필터링 ---
     sensor_df_filtered = sensor_df_all[sensor_df_all['chamber_id'] == selected_id]
     equipment_df_filtered = equipment_df_all[equipment_df_all['chamber_id'] == selected_id]
 
@@ -250,7 +242,7 @@ elif st.session_state.view_mode == 'detail':
         pig_log_df_filtered = pig_log_df_all[pig_log_df_all['pig_id'].isin(pigs_in_chamber)]
 
     st.divider()
-    # --- 섹션 1: 현재 축사 상황 (센서값 + 돼지 건강) ---
+
     st.header("📈 현재 챔버 상황")
     col1, col2 = st.columns(2)
     with col1:
@@ -326,8 +318,6 @@ elif st.session_state.view_mode == 'detail':
 
     st.divider()
 
-    # --- (★REMOVED★) '심층 분석' 섹션이 이 자리에서 제거되었습니다. ---
-
     # --- 섹션 3: 출하 및 에너지 분석 ---
     st.header("🐖 출하 및 에너지 분석")
     tab1, tab2 = st.tabs(["출하 날짜 예측", "에너지 사용량 분석"])
@@ -357,18 +347,36 @@ elif st.session_state.view_mode == 'detail':
                 pigs_below_target = valid_latest_weights[valid_latest_weights['weight_kg'] < target_weight]
 
                 if not pigs_below_target.empty:
-                    rep_pig = pigs_below_target.sort_values('weight_kg', ascending=False).iloc[0]
-                    current_weight = rep_pig['weight_kg']
-                    weight_to_gain = target_weight - current_weight
+                    prediction_df = pigs_below_target.copy()
+                    ADG = 0.7
+                    today = pd.Timestamp.now()
 
-                    ADG = 0.7  # (가정) 일일 증체량
-                    days_needed = weight_to_gain / ADG
-                    predicted_date = pd.Timestamp.now() + pd.Timedelta(days=days_needed)
+                    prediction_df['부족한 체중(kg)'] = target_weight - prediction_df['weight_kg']
+                    prediction_df['예상 소요 일수'] = prediction_df['부족한 체중(kg)'] / ADG
+                    prediction_df['예상 출하일'] = prediction_df['예상 소요 일수'].apply(
+                        lambda days: today + pd.Timedelta(days=days))
+                    prediction_df = prediction_df.sort_values('예상 출하일', ascending=True)
 
-                    st.write(f"**대표 개체 (Pig ID: {rep_pig['pig_id']}) 분석:**")
-                    st.info(
-                        f"현재 체중 {current_weight:.1f}kg에서 {target_weight:.1f}kg까지 **약 {days_needed:.0f}일** 더 소요될 것으로 예상됩니다.")
-                    st.metric(f"{target_weight}kg 예상 도달 날짜", f"{predicted_date.strftime('%Y-%m-%d')}")
+                    display_cols = ['pig_id', 'weight_kg', '예상 소요 일수', '예상 출하일']
+                    prediction_df_display = prediction_df[display_cols].rename(columns={
+                        'pig_id': '돼지 ID', 'weight_kg': '현재 체중(kg)',
+                        '예상 소요 일수': '남은 일수(일)', '예상 출하일': '예상 출하 날짜'
+                    })
+
+                    prediction_df_display['남은 일수(일)'] = prediction_df_display['남은 일수(일)'].round(0).astype(int)
+                    prediction_df_display['예상 출하 날짜'] = prediction_df_display['예상 출하 날짜'].dt.strftime('%Y-%m-%d')
+                    prediction_df_display['현재 체중(kg)'] = prediction_df_display['현재 체중(kg)'].round(1)
+
+                    fastest_pig = prediction_df_display.iloc[0]
+                    st.metric(
+                        f"가장 빠른 예상 출하일 (ID: {fastest_pig['돼지 ID']})",
+                        f"{fastest_pig['예상 출하 날짜']}",
+                        f"{fastest_pig['남은 일수(일)']}일 남음"
+                    )
+
+                    with st.expander("전체 개체별 예상 출하일 보기 (빠른 순)"):
+                        st.dataframe(prediction_df_display, use_container_width=True)
+
                 else:
                     if not ship_ready_now.empty:
                         st.success(f"모든 개체가 이미 목표 체중({target_weight}kg) 이상입니다.")
@@ -377,12 +385,60 @@ elif st.session_state.view_mode == 'detail':
         else:
             st.warning("몸무게 데이터가 없어 계산할 수 없습니다.")
 
+    # --- (★수정★) '에너지 사용량' 탭 수정 ---
     with tab2:
         if not equipment_df_filtered.empty:
-            total_usage = equipment_df_filtered.groupby('equipment_type')['power_usage_wh'].sum() / 1000
-            fig_energy = px.bar(total_usage, title="장비별 총 에너지 사용량 (kWh)",
-                                labels={'value': '사용량 (kWh)', 'equipment_type': '장비 종류'})
-            st.plotly_chart(fig_energy, use_container_width=True)
+            min_date_eq = equipment_df_filtered['timestamp'].min().date()
+            max_date_eq = equipment_df_filtered['timestamp'].max().date()
+
+            date_range_eq = st.date_input(
+                "조회 기간을 선택하세요:",
+                value=(min_date_eq, max_date_eq),
+                min_value=min_date_eq,
+                max_value=max_date_eq,
+                key=f"energy_date_selector_{selected_id}"
+            )  # <-- (★NEW★) 괄호 추가됨
+
+            energy_data_filtered_by_date = pd.DataFrame()
+            start_date_str = min_date_eq.isoformat()
+            end_date_str = max_date_eq.isoformat()
+
+            if len(date_range_eq) == 2:
+                start_date = pd.to_datetime(date_range_eq[0])
+                end_date = pd.to_datetime(date_range_eq[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                start_date_str = date_range_eq[0].isoformat()
+                end_date_str = date_range_eq[1].isoformat()
+
+                energy_data_filtered_by_date = equipment_df_filtered[
+                    (equipment_df_filtered['timestamp'] >= start_date) &
+                    (equipment_df_filtered['timestamp'] <= end_date)
+                    ]
+
+            if energy_data_filtered_by_date.empty:
+                st.info("선택된 기간에 해당하는 에너지 데이터가 없습니다.")
+            else:
+                st.subheader(f"기간 내 장비별 사용량 ({start_date_str} ~ {end_date_str})")
+                period_usage = energy_data_filtered_by_date.groupby('equipment_type')['power_usage_wh'].sum() / 1000
+                fig_energy_period = px.bar(period_usage, title="장비별 기간 내 사용량 (kWh)",
+                                           labels={'value': '사용량 (kWh)', 'equipment_type': '장비 종류'})
+                st.plotly_chart(fig_energy_period, use_container_width=True)
+
+                st.divider()
+
+
+                @st.cache_data
+                def convert_df_to_csv(df):
+                    return df.to_csv(index=False, encoding='utf-8-sig')
+
+
+                csv_data = convert_df_to_csv(energy_data_filtered_by_date)
+
+                st.download_button(
+                    label=f"📈 기간({start_date_str}~{end_date_str}) 로그 다운로드",
+                    data=csv_data,
+                    file_name=f"energy_logs_{selected_no}ch_{start_date_str}_to_{end_date_str}.csv",
+                    mime="text/csv",
+                )
         else:
             st.warning("에너지 사용량 데이터가 없습니다.")
 
@@ -395,7 +451,6 @@ elif st.session_state.view_mode == 'detail':
     model = load_prediction_model(MODEL_FILE_PATH)
 
     if model is None:
-        # --- AI Mock-up (모델 파일이 없을 때) ---
         st.info("AI 모델 파일(shipment_model.pkl)을 찾을 수 없습니다. Mock-up 모드로 UI를 표시합니다.")
         st.subheader("🐖 계절별 출하 분류 (테스트)")
         col1, col2 = st.columns(2)
@@ -411,7 +466,6 @@ elif st.session_state.view_mode == 'detail':
         st.info("파란색 막대는 '정상' 예측에 긍정적인 영향을, 빨간색 막대는 부정적인 영향을 준 요인입니다.")
 
     elif not sensor_df_filtered.empty:
-        # --- 실제 AI 모델 연동 (모델 파일이 있을 때) ---
         try:
             latest_data = sensor_df_filtered.sort_values("timestamp").tail(1).iloc[0]
 

@@ -3,7 +3,7 @@ import pandas as pd
 import sqlalchemy as sa
 import requests
 from datetime import datetime
-import plotly.express as px  # Plotly import 확인
+import plotly.express as px
 import numpy as np
 import os
 import joblib
@@ -38,12 +38,13 @@ def init_db_connection():
 # -----------------------------------------------------------------
 @st.cache_data(ttl=600)
 def load_data_from_db(_engine, table_name, limit=1000, order_by_col='timestamp'):
-    """DB에서 데이터를 로드하는 범용 함수"""
+    """DB에서 데이터를 로드하는 범용 함수 (★수정★: 델타 로직 제거, 원래대로 복원)"""
     if _engine is None:
         return pd.DataFrame()
     try:
         order_clause = f"ORDER BY {order_by_col} DESC" if order_by_col else ""
 
+        # 'None' 문자열이 아닌 진짜 None 타입으로 limit 처리
         if limit == 'None' or limit is None:
             limit_clause = ""
         else:
@@ -106,8 +107,10 @@ if 'view_mode' not in st.session_state:
 
 # --- 1. 모든 원본 데이터 로드 ---
 engine = init_db_connection()
+# (★수정★) limit 원래대로 복원
 sensor_df_all = load_data_from_db(engine, 'Chamber_Logs', limit=20000)
 equipment_df_all = load_data_from_db(engine, 'Equipment_Logs', limit=20000)
+weather_ultra_fcst_df = load_data_from_db(engine, "weather_ultra_fcst", limit=48, order_by_col="fcst_dt")
 
 pig_log_df_all = load_data_from_db(engine, 'Pig_Logs', limit='None', order_by_col='timestamp')
 chambers_df = load_data_from_db(engine, 'Chambers', limit='None', order_by_col=None)
@@ -141,6 +144,8 @@ if st.session_state.view_mode == 'overview':
 
     with st.container(border=True):
         st.subheader(" AICU 총괄 요약")
+
+        # --- (★수정★) 델타 계산 로직 삭제, 원래 로직으로 복원 ---
         cols = st.columns(5)
 
         if not pig_log_df_all.empty:
@@ -157,6 +162,7 @@ if st.session_state.view_mode == 'overview':
         else:
             cols[1].metric("총 '주의' 개체 수", "N/A")
 
+        # ✅ [수정] 3. '현재 외부 날씨' (시간별 DB 데이터 사용)
         if not weather_ultra_fcst_df.empty and {"T1H", "REH"}.issubset(weather_ultra_fcst_df.columns):
             latest_weather = weather_ultra_fcst_df.iloc[0]  # 가장 최신 시간
             cols[2].metric("현재 외부 온도", f"{latest_weather.get('T1H', 0):.1f} °C")
@@ -165,6 +171,7 @@ if st.session_state.view_mode == 'overview':
             cols[2].metric("현재 외부 온도", "N/A")
             cols[3].metric("현재 외부 습도", "N/A")
 
+        # ✅ [수정] 4. '오늘 강수 확률' (일일 요약 DB 데이터 사용)
         if not mid_land_fcst_df.empty and {"pop_am", "pop_pm"}.issubset(mid_land_fcst_df.columns):
             today_weather = mid_land_fcst_df.iloc[0]  # 오늘 예보
             pop_am = today_weather.get("pop_am", 0)  # 오전 강수 확률
@@ -175,6 +182,7 @@ if st.session_state.view_mode == 'overview':
         else:
             cols[4].metric("강수 확률", "N/A")
 
+    # ----------------------------------------------------
 
     st.divider()
 
@@ -224,6 +232,58 @@ if st.session_state.view_mode == 'overview':
                     args=(chamber_id, chamber_no)
                 )
 
+    # ('주간 날씨 예보' 테이블)
+    # ----------------------------------------------------
+    st.divider()
+    st.subheader("🗓️ 주간 날씨 요약 (기상청 DB)")
+
+    # (DB에서 로드한 mid_land_fcst_df 변수 사용)
+    needed_cols = ["fcst_date", "wf_am", "pop_am", "wf_pm", "pop_pm", "tmin", "tmax"]
+
+    if not mid_land_fcst_df.empty and all(col in mid_land_fcst_df.columns for col in needed_cols):
+
+        # 1. 대시보드에 표시할 컬럼만 선택
+        display_df = mid_land_fcst_df[list(needed_cols)].copy()
+
+        # 2. 날짜순으로 정렬
+        display_df = display_df.sort_values(by="fcst_date")
+
+        # 3. 날짜 형식을 '00월 00일 (요일)'로 변경
+        display_df['fcst_date'] = display_df['fcst_date'].dt.strftime('%m월 %d일 (%a)')
+
+        # 4. 컬럼 이름을 한글로 변경
+        display_df = display_df.rename(columns={
+            "fcst_date": "날짜",
+            "pop_am": "오전 강수 확률(%)",
+            "wf_am": "오전 날씨",
+            "pop_pm": "오후 강수 확률(%)",
+            "wf_pm": "오후 날씨",
+            "tmin": "최저 기온(°C)",
+            "tmax": "최고 기온(°C)"
+        })
+
+        weather_emoji_map = {
+            "맑음": "☀️",
+            "구름많음": "🌥️",
+            "흐림": "☁️",
+            "비": "🌧️",
+            "눈": "❄️",
+            "비/눈": "🌨️",
+            "소나기": "🌦️"
+            # (필요시 DB에 있는 다른 텍스트도 추가)
+        }
+        # 2. '오전 날씨'와 '오후 날씨' 컬럼의 텍스트를 이모티콘으로 바꿉니다.
+        display_df["오전 날씨"] = display_df["오전 날씨"].replace(weather_emoji_map)
+        display_df["오후 날씨"] = display_df["오후 날씨"].replace(weather_emoji_map)
+
+        # 5. '날짜'를 인덱스로 설정하여 테이블(표)로 표시
+        st.dataframe(
+            display_df.set_index("날짜"),
+            width='stretch'  # (use_container_width=True 대신 사용)
+        )
+
+    else:
+        st.warning("주간 날씨 요약(mid_land_fcst) 데이터를 DB에서 불러오지 못했거나, 필요한 컬럼이 없습니다.")
 
 # =================================================================
 # B. '챔버 상세 (Detail)' 화면
@@ -252,6 +312,7 @@ elif st.session_state.view_mode == 'detail':
         if not sensor_df_filtered.empty:
             latest_sensor = sensor_df_filtered.iloc[0]
             c1, c2, c3 = st.columns(3)
+            # (★수정★) 가짜 델타 제거
             c1.metric("온도", f"{latest_sensor['temperature']:.1f} °C")
             c2.metric("습도", f"{latest_sensor['humidity']:.1f} %")
             c3.metric("CO2", f"{latest_sensor['co2']:.0f} ppm")
@@ -280,13 +341,13 @@ elif st.session_state.view_mode == 'detail':
                 tab1_chart, tab2_chart, tab3_chart = st.tabs(["🌡️ 온도", "💧 습도", "💨 CO2"])
                 with tab1_chart:
                     fig_temp = px.line(chart_data_filtered_by_date, x='timestamp', y='temperature', title='온도 추이')
-                    st.plotly_chart(fig_temp, use_container_width=True)
+                    st.plotly_chart(fig_temp, width='stretch')
                 with tab2_chart:
                     fig_humi = px.line(chart_data_filtered_by_date, x='timestamp', y='humidity', title='습도 추이')
-                    st.plotly_chart(fig_humi, use_container_width=True)
+                    st.plotly_chart(fig_humi, width='stretch')
                 with tab3_chart:
                     fig_co2 = px.line(chart_data_filtered_by_date, x='timestamp', y='co2', title='CO2 추이')
-                    st.plotly_chart(fig_co2, use_container_width=True)
+                    st.plotly_chart(fig_co2, width='stretch')
 
         else:
             st.warning("센서 데이터를 찾을 수 없습니다.")
@@ -294,7 +355,7 @@ elif st.session_state.view_mode == 'detail':
     with col2:
         st.subheader("❤️ 돼지 건강 상태 (Pig_Logs)")
         if not pig_log_df_filtered.empty:
-            threshold_temp = 40;
+            threshold_temp = 40
             threshold_breath = 50
             latest_pig_logs = pig_log_df_filtered.loc[pig_log_df_filtered.groupby('pig_id')['timestamp'].idxmax()]
             warning_pigs = latest_pig_logs[
@@ -320,7 +381,10 @@ elif st.session_state.view_mode == 'detail':
 
     st.divider()
 
+    # ✅ [신규] 챔버 외부 날씨 (시간별 상세 예보 DB)
     st.header("🌦️ 챔버 외부 날씨 (기상청 DB)")
+
+    # (대문자로 변환된 컬럼명 사용)
     needed_weather_cols = {"FCST_DT", "T1H", "REH", "RN1", "SKY", "PTY"}
 
     if not weather_ultra_fcst_df.empty and needed_weather_cols.issubset(weather_ultra_fcst_df.columns):
@@ -330,13 +394,11 @@ elif st.session_state.view_mode == 'detail':
         w_tab1, w_tab2, w_tab3 = st.tabs(["🌡️ 외부 기온 (T1H)", "💧 외부 습도 (REH)", "☔ 시간당 강수량 (RN1)"])
 
         with w_tab1:
-            st.plotly_chart(px.line(weather_chart_data, y='T1H', title='시간별 외부 기온'), use_container_width=True)
+            st.plotly_chart(px.line(weather_chart_data, y='T1H', title='시간별 외부 기온'), width='stretch')
         with w_tab2:
-            st.plotly_chart(px.line(weather_chart_data, y='REH', title='시간별 외부 습도'), use_container_width=True)
+            st.plotly_chart(px.line(weather_chart_data, y='REH', title='시간별 외부 습도'), width='stretch')
         with w_tab3:
-            # RN1(강수량)이 '강수없음' 등 문자열일 수 있으므로 숫자 변환
-            weather_chart_data['RN1_NUMERIC'] = pd.to_numeric(weather_chart_data['RN1'], errors='coerce').fillna(0)
-            st.plotly_chart(px.bar(weather_chart_data, y='RN1_NUMERIC', title='시간별 강수량(mm)'), use_container_width=True)
+            st.plotly_chart(px.bar(weather_chart_data, y='RN1', title='시간별 강수량'), width='stretch')
 
         latest_sky = weather_ultra_fcst_df.iloc[0].get("SKY", -1)
         st.info(f"참고: 현재 하늘 상태(SKY) 코드는 '{latest_sky}'입니다. (1: 맑음, 3: 구름많음, 4: 흐림)")
@@ -403,7 +465,7 @@ elif st.session_state.view_mode == 'detail':
                     )
 
                     with st.expander("전체 개체별 예상 출하일 보기 (빠른 순)"):
-                        st.dataframe(prediction_df_display, use_container_width=True)
+                        st.dataframe(prediction_df_display, width='stretch')
 
                 else:
                     if not ship_ready_now.empty:
@@ -448,7 +510,7 @@ elif st.session_state.view_mode == 'detail':
                 period_usage = energy_data_filtered_by_date.groupby('equipment_type')['power_usage_wh'].sum() / 1000
                 fig_energy_period = px.bar(period_usage, title="장비별 기간 내 사용량 (kWh)",
                                            labels={'value': '사용량 (kWh)', 'equipment_type': '장비 종류'})
-                st.plotly_chart(fig_energy_period, use_container_width=True)
+                st.plotly_chart(fig_energy_period, width='stretch')
 
                 st.divider()
 
@@ -485,27 +547,11 @@ elif st.session_state.view_mode == 'detail':
         col2.metric("정상 확률", "90 %")
 
         st.subheader("AI 판단 근거 (XAI Mock-up)")
-        
-        # --- (★NEW★) st.bar_chart -> px.bar로 수정 ---
         shap_values = pd.DataFrame({
             '영향력': [0.12, 0.05, -0.08],
-            '변수': ['온도(긍정)', '습도(긍정)', 'CO2(부정)']
-        })
-        # Plotly를 사용하여 색상을 명시적으로 제어
-        color_map = {'온도(긍정)': 'blue', '습도(긍정)': 'blue', 'CO2(부정)': 'red'}
-        fig_shap = px.bar(
-            shap_values, 
-            x='변수', 
-            y='영향력', 
-            color='변수', 
-            color_discrete_map=color_map, # 색상 매핑 적용
-            title='AI 예측에 대한 각 변수의 영향력',
-            labels={'변수': '변수', '영향력': '영향력'},
-            category_orders={"변수": ['온도(긍정)', '습도(긍정)', 'CO2(부정)']} # 순서 고정
-        )
-        st.plotly_chart(fig_shap, use_container_width=True)
-        # --- 수정 완료 ---
-        
+            '색상': ['blue', 'blue', 'red']
+        }, index=['온도(긍정)', '습도(긍정)', 'CO2(부정)'])
+        st.bar_chart(shap_values, y='영향력', color='색상')
         st.info("파란색 막대는 '정상' 예측에 긍정적인 영향을, 빨간색 막대는 부정적인 영향을 준 요인입니다.")
 
     elif not sensor_df_filtered.empty:

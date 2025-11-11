@@ -347,7 +347,7 @@ elif st.session_state.view_mode == 'detail':
     pig_log_df_filtered = pd.DataFrame()
     if not pigs_df.empty:
         pigs_in_chamber = pigs_df[pigs_df['chamber_id'] == selected_id]['pig_id']
-        pig_log_df_filtered = pig_log_df_all[pig_log_df_all['pig_id'].isin(pigs_in_chamber)]
+        pig_log_df_filtered = pig_log_df_all[pig_log_df_all['pig_id'].isin(pigs_in_chamber)].copy()
 
     st.divider()
 

@@ -152,9 +152,11 @@ if st.session_state.view_mode == "overview":
         st.subheader("AICU 총괄 요약")
         cols = st.columns(5)
 
-        # 2. '총 사육 두수' 계산 (Pigs 마스터 테이블 기준)
-        total_pigs = len(pigs_df["pig_id"].unique()) if not pigs_df.empty and "pig_id" in pigs_df.columns else 0
-        cols[0].metric("총 사육 두수", f"{total_pigs} 마리")
+        if not pig_log_df_all.empty:
+            total_pigs = len(pig_log_df_all['pig_id'].unique())
+            cols[0].metric("총 사육 두수", f"{total_pigs} 마리")
+        else:
+            cols[0].metric("총 사육 두수", "N/A (로그 없음)")
 
         # 3. '총 주의 개체 수' (새로운 기준으로 계산)
         if not pig_log_df_all.empty:

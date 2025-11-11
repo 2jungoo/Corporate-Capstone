@@ -442,15 +442,15 @@ elif st.session_state.view_mode == 'detail':
                             reasons = []
                             # 온도 확인
                             if row['temp_rectal'] < temp_norm_min:
-                                reasons.append(f"온도 낮음 ({row['temp_rectal']:.1f}°C)")
+                                reasons.append(f"온도 낮음")
                             elif row['temp_rectal'] > temp_norm_max:
-                                reasons.append(f"온도 높음 ({row['temp_rectal']:.1f}°C)")
+                                reasons.append(f"온도 높음")
 
                             # 호흡 확인
                             if row['breath_rate'] < breath_norm_min:
-                                reasons.append(f"호흡 느림 ({row['breath_rate']:.0f}회)")
+                                reasons.append(f"호흡 느림")
                             elif row['breath_rate'] > breath_norm_max:
-                                reasons.append(f"호흡 빠름 ({row['breath_rate']:.0f}회)")
+                                reasons.append(f"호흡 빠름")
 
                             return ', '.join(reasons)
 

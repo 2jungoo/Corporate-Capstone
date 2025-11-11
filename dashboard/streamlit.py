@@ -107,7 +107,7 @@ if 'view_mode' not in st.session_state:
 
 # --- 1. 모든 원본 데이터 로드 ---
 engine = init_db_connection()
-# (★수정★) limit 원래대로 복원
+# limit 원래대로 복원
 sensor_df_all = load_data_from_db(engine, 'Chamber_Logs', limit=20000)
 equipment_df_all = load_data_from_db(engine, 'Equipment_Logs', limit=20000)
 weather_ultra_fcst_df = load_data_from_db(engine, "weather_ultra_fcst", limit=48, order_by_col="fcst_dt")
@@ -138,31 +138,52 @@ if not weather_ultra_fcst_df.empty:
 # =================================================================
 # A. '전체 맵 (Overview)' 화면
 # =================================================================
-if st.session_state.view_mode == 'overview':
+if st.session_state.view_mode == "overview":
 
     st.title("🐷 스마트 축사 현황 (전체 맵)")
 
-    with st.container(border=True):
-        st.subheader(" AICU 총괄 요약")
+    # --- 1. 새로운 '정상' 건강 기준 정의 ---
+    temp_norm_min = 37.0
+    temp_norm_max = 39.0
+    breath_norm_min = 55
+    breath_norm_max = 65
 
-        # --- (★수정★) 델타 계산 로직 삭제, 원래 로직으로 복원 ---
+    with st.container(border=True):
+        st.subheader("AICU 총괄 요약")
         cols = st.columns(5)
 
-        if not pig_log_df_all.empty:
-            total_pigs = len(pig_log_df_all['pig_id'].unique())
-            cols[0].metric("총 사육 두수", f"{total_pigs} 마리")
-        else:
-            cols[0].metric("총 사육 두수", "N/A (로그 없음)")
+        # 2. '총 사육 두수' 계산 (Pigs 마스터 테이블 기준)
+        total_pigs = len(pigs_df["pig_id"].unique()) if not pigs_df.empty and "pig_id" in pigs_df.columns else 0
+        cols[0].metric("총 사육 두수", f"{total_pigs} 마리")
 
+        # 3. '총 주의 개체 수' (새로운 기준으로 계산)
         if not pig_log_df_all.empty:
-            latest_pig_logs = pig_log_df_all.loc[pig_log_df_all.groupby('pig_id')['timestamp'].idxmax()]
-            warning_pigs = latest_pig_logs[
-                (latest_pig_logs['temp_rectal'] > 40) | (latest_pig_logs['breath_rate'] > 50)]
-            cols[1].metric("총 '주의' 개체 수", f"{len(warning_pigs)} 마리")
-        else:
-            cols[1].metric("총 '주의' 개체 수", "N/A")
+            # (데이터 타입 변환 및 유효 데이터 필터링)
+            try:
+                pig_log_df_all['temp_rectal'] = pd.to_numeric(pig_log_df_all['temp_rectal'], errors='coerce')
+                pig_log_df_all['breath_rate'] = pd.to_numeric(pig_log_df_all['breath_rate'], errors='coerce')
+            except Exception:
+                pass  # 오류 무시
 
-        # ✅ [수정] 3. '현재 외부 날씨' (시간별 DB 데이터 사용)
+            valid_logs = pig_log_df_all.dropna(subset=['temp_rectal', 'breath_rate'])
+
+            if not valid_logs.empty:
+                latest_pig_logs = valid_logs.loc[valid_logs.groupby("pig_id")["timestamp"].idxmax()]
+
+                # '정상' 범위를 벗어나는 모든 개체 필터링
+                warning_pigs_total = latest_pig_logs[
+                    (latest_pig_logs["temp_rectal"] < temp_norm_min) |
+                    (latest_pig_logs["temp_rectal"] > temp_norm_max) |
+                    (latest_pig_logs["breath_rate"] < breath_norm_min) |
+                    (latest_pig_logs["breath_rate"] > breath_norm_max)
+                    ]
+                cols[1].metric("총 '주의' 개체 수", f"{len(warning_pigs_total)} 마리")
+            else:
+                cols[1].metric("총 '주의' 개체 수", "N/A (데이터 부족)")
+        else:
+            cols[1].metric("총 '주의' 개체 수", "N/A (로그 없음)")
+
+        # 3. '현재 외부 날씨' (시간별 DB 데이터 사용)
         if not weather_ultra_fcst_df.empty and {"T1H", "REH"}.issubset(weather_ultra_fcst_df.columns):
             latest_weather = weather_ultra_fcst_df.iloc[0]  # 가장 최신 시간
             cols[2].metric("현재 외부 온도", f"{latest_weather.get('T1H', 0):.1f} °C")
@@ -171,7 +192,7 @@ if st.session_state.view_mode == 'overview':
             cols[2].metric("현재 외부 온도", "N/A")
             cols[3].metric("현재 외부 습도", "N/A")
 
-        # ✅ [수정] 4. '오늘 강수 확률' (일일 요약 DB 데이터 사용)
+        # 4. '오늘 강수 확률' (일일 요약 DB 데이터 사용)
         if not mid_land_fcst_df.empty and {"pop_am", "pop_pm"}.issubset(mid_land_fcst_df.columns):
             today_weather = mid_land_fcst_df.iloc[0]  # 오늘 예보
             pop_am = today_weather.get("pop_am", 0)  # 오전 강수 확률
@@ -185,7 +206,6 @@ if st.session_state.view_mode == 'overview':
     # ----------------------------------------------------
 
     st.divider()
-
     st.subheader("챔버별 현황 (클릭하여 드릴다운)")
 
     if chambers_df.empty:
@@ -198,31 +218,45 @@ if st.session_state.view_mode == 'overview':
             chamber_no = row['chamber_no']
             current_col = grid_cols[i % 2]
 
+            # 5. 챔버별 '주의' 개체 수 (새로운 기준으로 계산)
             warn_count = 0
             if not pigs_df.empty and not pig_log_df_all.empty:
                 pigs_in_chamber_ids = pigs_df[pigs_df['chamber_id'] == chamber_id]['pig_id']
                 pig_logs_in_chamber = pig_log_df_all[pig_log_df_all['pig_id'].isin(pigs_in_chamber_ids)]
-                if not pig_logs_in_chamber.empty:
-                    latest_pig_logs = pig_logs_in_chamber.loc[
-                        pig_logs_in_chamber.groupby('pig_id')['timestamp'].idxmax()]
-                    warning_pigs = latest_pig_logs[
-                        (latest_pig_logs['temp_rectal'] > 40) | (latest_pig_logs['breath_rate'] > 50)]
-                    warn_count = len(warning_pigs)
 
+                # (유효한 건강 데이터만 필터링)
+                valid_logs_in_chamber = pig_logs_in_chamber.dropna(subset=['temp_rectal', 'breath_rate'])
+
+                if not valid_logs_in_chamber.empty:
+                    latest_pig_logs_chamber = valid_logs_in_chamber.loc[
+                        valid_logs_in_chamber.groupby('pig_id')['timestamp'].idxmax()]
+
+                    # '정상' 범위를 벗어나는 개체 필터링
+                    warning_pigs_chamber = latest_pig_logs_chamber[
+                        (latest_pig_logs_chamber["temp_rectal"] < temp_norm_min) |
+                        (latest_pig_logs_chamber["temp_rectal"] > temp_norm_max) |
+                        (latest_pig_logs_chamber["breath_rate"] < breath_norm_min) |
+                        (latest_pig_logs_chamber["breath_rate"] > breath_norm_max)
+                        ]
+                    warn_count = len(warning_pigs_chamber)
+
+            # 6. '주의' 개체 수(warn_count)에 따라 컨테이너 제목 변경
             with current_col.container(border=True):
                 if warn_count > 0:
-                    st.error(f"🚨 {chamber_no}번 챔버 (주의!)")
+                    st.error(f"🚨 {chamber_no}번 챔버 (주의!)")  # (주의 개체가 1명이라도 있으면 에러 표시)
                 else:
                     st.subheader(f"✅ {chamber_no}번 챔버")
 
                 c1_metric, c2_metric = st.columns(2)
 
                 chamber_sensor_data = sensor_df_all[sensor_df_all['chamber_id'] == chamber_id]
-                if not chamber_sensor_data.empty:
+                if not chamber_sensor_data.empty and "temperature" in chamber_sensor_data.columns:
+                    # .iloc[0] 추가
                     c1_metric.metric("현재 온도", f"{chamber_sensor_data.iloc[0]['temperature']:.1f} °C")
                 else:
                     c1_metric.metric("현재 온도", "N/A")
 
+                # 7. 계산된 'warn_count'를 정확히 표시
                 c2_metric.metric("건강 '주의' 개체", f"{warn_count} 마리")
 
                 st.button(
@@ -231,7 +265,6 @@ if st.session_state.view_mode == 'overview':
                     on_click=set_detail_view,
                     args=(chamber_id, chamber_no)
                 )
-
     # ('주간 날씨 예보' 테이블)
     # ----------------------------------------------------
     st.divider()
@@ -254,13 +287,15 @@ if st.session_state.view_mode == 'overview':
         # 4. 컬럼 이름을 한글로 변경
         display_df = display_df.rename(columns={
             "fcst_date": "날짜",
-            "pop_am": "오전 강수 확률(%)",
+            "pop_am": "오전 확률(%)",
             "wf_am": "오전 날씨",
-            "pop_pm": "오후 강수 확률(%)",
+            "pop_pm": "오후 확률(%)",
             "wf_pm": "오후 날씨",
             "tmin": "최저 기온(°C)",
             "tmax": "최고 기온(°C)"
         })
+
+        display_df['일일 강수 확률(%)'] = display_df[['오전 확률(%)', '오후 확률(%)']].max(axis=1).astype(int)
 
         weather_emoji_map = {
             "맑음": "☀️",
@@ -276,6 +311,15 @@ if st.session_state.view_mode == 'overview':
         display_df["오전 날씨"] = display_df["오전 날씨"].replace(weather_emoji_map)
         display_df["오후 날씨"] = display_df["오후 날씨"].replace(weather_emoji_map)
 
+        final_column_order = [
+            "날짜",
+            "일일 강수 확률(%)",
+            "오전 날씨",
+            "오후 날씨",
+            "최저 기온(°C)",
+            "최고 기온(°C)",
+        ]
+        display_df = display_df[final_column_order]
         # 5. '날짜'를 인덱스로 설정하여 테이블(표)로 표시
         st.dataframe(
             display_df.set_index("날짜"),
@@ -312,7 +356,7 @@ elif st.session_state.view_mode == 'detail':
         if not sensor_df_filtered.empty:
             latest_sensor = sensor_df_filtered.iloc[0]
             c1, c2, c3 = st.columns(3)
-            # (★수정★) 가짜 델타 제거
+            #가짜 델타 제거
             c1.metric("온도", f"{latest_sensor['temperature']:.1f} °C")
             c2.metric("습도", f"{latest_sensor['humidity']:.1f} %")
             c3.metric("CO2", f"{latest_sensor['co2']:.0f} ppm")
@@ -354,34 +398,75 @@ elif st.session_state.view_mode == 'detail':
 
     with col2:
         st.subheader("❤️ 돼지 건강 상태 (Pig_Logs)")
+
+        # (Pig_Logs 데이터가 필터링되어 'pig_log_df_filtered'에 있다고 가정)
         if not pig_log_df_filtered.empty:
-            threshold_temp = 40
-            threshold_breath = 50
-            latest_pig_logs = pig_log_df_filtered.loc[pig_log_df_filtered.groupby('pig_id')['timestamp'].idxmax()]
-            warning_pigs = latest_pig_logs[
-                (latest_pig_logs['temp_rectal'] > threshold_temp) | (latest_pig_logs['breath_rate'] > 50)]
-            st.metric("건강 '주의' 개체 수", f"{len(warning_pigs)} 마리")
 
-            if len(warning_pigs) > 0:
-                with st.expander("'주의' 개체 목록 보기"):
+            # 1. 새로운 '정상' 범위 정의
+            temp_norm_min = 37.0
+            temp_norm_max = 39.0
+            breath_norm_min = 55
+            breath_norm_max = 65
 
-                    def find_reason(row):
-                        reasons = []
-                        if row['temp_rectal'] > threshold_temp: reasons.append('고열')
-                        if row['breath_rate'] > threshold_breath: reasons.append('호흡 빠름')
-                        return ', '.join(reasons)
+            # 2. 데이터 타입 변환 및 유효 데이터 필터링
+            # (weight_kg와 마찬가지로, 숫자 변환 및 NaN/NULL 값 제거)
+            try:
+                pig_log_df_filtered['temp_rectal'] = pd.to_numeric(pig_log_df_filtered['temp_rectal'], errors='coerce')
+                pig_log_df_filtered['breath_rate'] = pd.to_numeric(pig_log_df_filtered['breath_rate'], errors='coerce')
+            except Exception as e:
+                st.warning(f"건강 상태 분석 중 타입 변환 오류: {e}")
+
+            valid_health_logs = pig_log_df_filtered.dropna(subset=['temp_rectal', 'breath_rate'])
+
+            if not valid_health_logs.empty:
+                # 3. 각 돼지의 가장 최신 로그 가져오기
+                latest_pig_logs = valid_health_logs.loc[valid_health_logs.groupby('pig_id')['timestamp'].idxmax()]
+
+                # 4. '정상' 범위를 벗어나는 모든 개체 필터링
+                warning_pigs = latest_pig_logs[
+                    (latest_pig_logs['temp_rectal'] < temp_norm_min) |  # 온도 낮음
+                    (latest_pig_logs['temp_rectal'] > temp_norm_max) |  # 온도 높음
+                    (latest_pig_logs['breath_rate'] < breath_norm_min) |  # 호흡 느림
+                    (latest_pig_logs['breath_rate'] > breath_norm_max)  # 호흡 빠름
+                    ]
+
+                st.metric("건강 '주의' 개체 수", f"{len(warning_pigs)} 마리")
+
+                if len(warning_pigs) > 0:
+                    with st.expander("'주의' 개체 목록 보기"):
+
+                        # 5. '주의 원인'을 찾는 함수 로직 변경
+                        def find_reason(row):
+                            reasons = []
+                            # 온도 확인
+                            if row['temp_rectal'] < temp_norm_min:
+                                reasons.append(f"온도 낮음 ({row['temp_rectal']:.1f}°C)")
+                            elif row['temp_rectal'] > temp_norm_max:
+                                reasons.append(f"온도 높음 ({row['temp_rectal']:.1f}°C)")
+
+                            # 호흡 확인
+                            if row['breath_rate'] < breath_norm_min:
+                                reasons.append(f"호흡 느림 ({row['breath_rate']:.0f}회)")
+                            elif row['breath_rate'] > breath_norm_max:
+                                reasons.append(f"호흡 빠름 ({row['breath_rate']:.0f}회)")
+
+                            return ', '.join(reasons)
 
 
-                    warning_pigs_with_reason = warning_pigs.copy()
-                    warning_pigs_with_reason['주의 원인'] = warning_pigs_with_reason.apply(find_reason, axis=1)
+                        warning_pigs_with_reason = warning_pigs.copy()
+                        warning_pigs_with_reason['주의 원인'] = warning_pigs_with_reason.apply(find_reason, axis=1)
 
-                    st.dataframe(warning_pigs_with_reason[["pig_id", "temp_rectal", "breath_rate", "주의 원인"]])
+                        # 데이터프레임에 표시할 컬럼 (순서 지정)
+                        display_cols = ["pig_id", "temp_rectal", "breath_rate", "주의 원인"]
+                        st.dataframe(warning_pigs_with_reason[display_cols])
+            else:
+                st.warning("유효한 건강 데이터(체온/호흡수)가 없습니다.")
         else:
             st.warning("돼지 로그 데이터를 찾을 수 없습니다.")
 
     st.divider()
 
-    # ✅ [신규] 챔버 외부 날씨 (시간별 상세 예보 DB)
+    # 챔버 외부 날씨 (시간별 상세 예보 DB)
     st.header("🌦️ 챔버 외부 날씨 (기상청 DB)")
 
     # (대문자로 변환된 컬럼명 사용)

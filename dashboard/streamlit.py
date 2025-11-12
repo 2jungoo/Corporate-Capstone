@@ -595,6 +595,9 @@ def set_overview_view():
     st.session_state.selected_chamber_id = None
     st.session_state.selected_chamber_no = None
 
+    if 'prediction_results' in st.session_state:
+        st.session_state.prediction_results = None
+
 
 # -----------------------------------------------------------------
 # 5. Streamlit 대시보드 UI 구성
@@ -745,9 +748,7 @@ if st.session_state.view_mode == "overview":
                 st.warning("🚨 강수 확률 70% 이상! 환기/습도 관리에 유의하세요.")
         else:
             cols[4].metric("강수 확률", "N/A")
-
     # ----------------------------------------------------
-
     st.divider()
     st.subheader("챔버별 현황 (클릭하여 드릴다운)")
 
@@ -815,6 +816,69 @@ if st.session_state.view_mode == "overview":
                     on_click=set_detail_view,
                     args=(chamber_id, chamber_no)
                 )
+
+        # ----------------------------------------------------
+        # '전체 에너지 사용량 분석' 섹션
+        # ----------------------------------------------------
+        st.header("전체 에너지 사용량 분석 (모든 챔버)")
+
+        # 'filtered'가 아닌 'equipment_df_all' (전체) 데이터를 사용합니다.
+        if not equipment_df_all.empty:
+            min_date_eq = equipment_df_all['timestamp'].min().date()
+            max_date_eq = equipment_df_all['timestamp'].max().date()
+
+            date_range_eq = st.date_input(
+                "조회 기간을 선택하세요:",
+                value=(min_date_eq, max_date_eq),
+                min_value=min_date_eq,
+                max_value=max_date_eq,
+                key="energy_date_selector_overview"  # (★수정★) 키 이름 변경
+            )
+
+            energy_data_filtered_by_date = pd.DataFrame()
+            start_date_str = min_date_eq.isoformat()
+            end_date_str = max_date_eq.isoformat()
+
+            if len(date_range_eq) == 2:
+                start_date = pd.to_datetime(date_range_eq[0])
+                end_date = pd.to_datetime(date_range_eq[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                start_date_str = date_range_eq[0].isoformat()
+                end_date_str = date_range_eq[1].isoformat()
+
+                # 'filtered'가 아닌 'equipment_df_all' (전체)에서 필터링
+                energy_data_filtered_by_date = equipment_df_all[
+                    (equipment_df_all['timestamp'] >= start_date) &
+                    (equipment_df_all['timestamp'] <= end_date)
+                    ]
+
+            if energy_data_filtered_by_date.empty:
+                st.info("선택된 기간에 해당하는 에너지 데이터가 없습니다.")
+            else:
+                st.subheader(f"기간 내 장비별 사용량 ({start_date_str} ~ {end_date_str})")
+                # '전체' 데이터로 그룹화 및 합산
+                period_usage = energy_data_filtered_by_date.groupby('equipment_type')['power_usage_wh'].sum() / 1000
+                fig_energy_period = px.bar(period_usage, title="장비별 기간 내 사용량 (kWh)",
+                                           labels={'value': '사용량 (kWh)', 'equipment_type': '장비 종류'})
+                st.plotly_chart(fig_energy_period, width='stretch')
+
+                st.divider()
+
+
+                @st.cache_data
+                def convert_df_to_csv(df):
+                    return df.to_csv(index=False, encoding='utf-8-sig')
+
+
+                csv_data = convert_df_to_csv(energy_data_filtered_by_date)
+
+                st.download_button(
+                    label=f"📈 전체 에너지 로그 다운로드",
+                    data=csv_data,
+                    file_name=f"energy_logs_ALL_{start_date_str}_to_{end_date_str}.csv",
+                    mime="text/csv",
+                )
+        else:
+            st.warning("에너지 사용량 데이터가 없습니다.")
     # 일일 날씨 (시간별 상세 예보 DB)
     st.header("🌦️ 일일 날씨")
 
@@ -1038,171 +1102,128 @@ elif st.session_state.view_mode == 'detail':
     st.divider()
 
     # --- 섹션 3: 출하 및 에너지 분석 ---
-    st.header("🐖 출하 및 에너지 분석")
-    tab1, tab2 = st.tabs(["출하 날짜 예측", "에너지 사용량 분석"])
+    st.header("🐖 출하 날짜 예상")
 
-    with tab1:
-        # 1. 앱 시작 시 로드한 '하이브리드 예측기'를 가져옵니다.
-        predictor = load_hybrid_predictor()
+    # 1. 앱 시작 시 로드한 '하이브리드 예측기'를 가져옵니다.
+    predictor = load_hybrid_predictor()
 
-        target_weight = st.number_input(
-            "목표 출하 체중(kg)을 입력하세요:",
-            min_value=80.0, value=116.0, step=1.0,
-            help="이 체중을 기준으로 출하 가능 개체 수와 예측 날짜를 계산합니다."
+    def clear_prediction_results():
+        st.session_state.prediction_results = None
+
+    target_weight = st.number_input(
+        "목표 출하 체중(kg)을 입력하세요:",
+        min_value=80.0, value=116.0, step=1.0,
+        help="이 체중을 기준으로 출하 가능 개체 수와 예측 날짜를 계산합니다."
+    )
+    if predictor is not None:
+        predictor.target_weight = target_weight
+
+    # 예측 결과를 저장할 공간 초기화
+    if 'prediction_results' not in st.session_state:
+        st.session_state.prediction_results = None
+
+    if not pig_log_df_filtered.empty and predictor is not None:
+
+        # (데이터 병합 및 AI 입력용 데이터 생성)
+        feed_data_df = sensor_df_filtered[['timestamp', 'feed_volume']].dropna()
+        pig_data_merged = pd.merge(
+            pig_log_df_filtered,
+            feed_data_df,
+            on="timestamp",
+            how="left"
         )
-        if predictor is not None:
-            predictor.target_weight = target_weight
+        pig_data_for_ai = pig_data_merged.rename(columns={
+            'weight_kg': 'weight_kg',
+            'feed_volume': 'feed_intake_kg',
+            'pig_id': 'pig_id'
+        })
+        if 'day' not in pig_data_for_ai.columns:
+            pig_data_for_ai = pig_data_for_ai.sort_values(by=['pig_id', 'timestamp'])
+            pig_data_for_ai['day'] = pig_data_for_ai.groupby('pig_id')['timestamp'].transform(
+                lambda x: (x - x.min()).dt.days)
+        if 'daily_gain_kg' not in pig_data_for_ai.columns:
+            pig_data_for_ai['weight_lag1'] = pig_data_for_ai.groupby('pig_id')['weight_kg'].shift(1)
+            pig_data_for_ai['daily_gain_kg'] = pig_data_for_ai['weight_kg'] - pig_data_for_ai['weight_lag1']
+            pig_data_for_ai['daily_gain_kg'] = pig_data_for_ai['daily_gain_kg'].fillna(0.6)
 
-        if not pig_log_df_filtered.empty and predictor is not None:
+        # ----------------------------------------------------
 
-            # (데이터 병합 및 AI 입력용 데이터 생성)
-            feed_data_df = sensor_df_filtered[['timestamp', 'feed_volume']].dropna()
-            pig_data_merged = pd.merge(
-                pig_log_df_filtered,
-                feed_data_df,
-                on="timestamp",
-                how="left"
-            )
-            pig_data_for_ai = pig_data_merged.rename(columns={
-                'weight_kg': 'weight_kg',
-                'feed_volume': 'feed_intake_kg',
-                'pig_id': 'pig_id'
-            })
-            if 'day' not in pig_data_for_ai.columns:
-                pig_data_for_ai = pig_data_for_ai.sort_values(by=['pig_id', 'timestamp'])
-                pig_data_for_ai['day'] = pig_data_for_ai.groupby('pig_id')['timestamp'].transform(
-                    lambda x: (x - x.min()).dt.days)
-            if 'daily_gain_kg' not in pig_data_for_ai.columns:
-                pig_data_for_ai['weight_lag1'] = pig_data_for_ai.groupby('pig_id')['weight_kg'].shift(1)
-                pig_data_for_ai['daily_gain_kg'] = pig_data_for_ai['weight_kg'] - pig_data_for_ai['weight_lag1']
-                pig_data_for_ai['daily_gain_kg'] = pig_data_for_ai['daily_gain_kg'].fillna(0.6)
+        logs_with_weights = (
+            pig_data_for_ai.dropna(subset=["weight_kg"])
+            if "weight_kg" in pig_data_for_ai.columns else pd.DataFrame()
+        )
 
-            # ----------------------------------------------------
+        if not logs_with_weights.empty:
+            latest_weights = logs_with_weights.loc[
+                logs_with_weights.groupby("pig_id")["timestamp"].idxmax()
+            ]
+            ship_ready_now = latest_weights[latest_weights["weight_kg"] >= target_weight]
 
-            logs_with_weights = (
-                pig_data_for_ai.dropna(subset=["weight_kg"])
-                if "weight_kg" in pig_data_for_ai.columns else pd.DataFrame()
-            )
+            c1, c2 = st.columns(2)
+            c1.metric(f"현재 {target_weight}kg 이상 (출하 가능)", f"{len(ship_ready_now)} 마리")
+            pigs_below = latest_weights[latest_weights["weight_kg"] < target_weight]
+            c2.metric("출하 예측 대상", f"{len(pigs_below)} 마리")
+            st.divider()
 
-            if not logs_with_weights.empty:
-                latest_weights = logs_with_weights.loc[
-                    logs_with_weights.groupby("pig_id")["timestamp"].idxmax()
-                ]
-                ship_ready_now = latest_weights[latest_weights["weight_kg"] >= target_weight]
+            st.subheader(f"🐷 {target_weight}kg 도달 날짜 예측 (AI 하이브리드)")
 
-                c1, c2 = st.columns(2)
-                c1.metric(f"현재 {target_weight}kg 이상 (출하 가능)", f"{len(ship_ready_now)} 마리")
-                pigs_below = latest_weights[latest_weights["weight_kg"] < target_weight]
-                c2.metric("출하 예측 대상", f"{len(pigs_below)} 마리")
-                st.divider()
-
-                st.subheader(f"🐷 {target_weight}kg 도달 날짜 예측 (AI 하이브리드)")
+            # 5. 예측 버튼 생성
+            if st.button(f"🐷 {len(pigs_below)}마리 출하 예측 실행하기", key=f"predict_btn_{selected_id}"):
 
                 if not pigs_below.empty:
-
                     results = []
                     today = pd.Timestamp.now()
 
+                    # 6. AI 예측 로직 전체를 버튼 안으로 이동
                     with st.spinner(f"{len(pigs_below)}마리 전체에 대한 출하 예측을 계산 중입니다... (시간 소요)"):
-                        # (LSTM 모델은 모든 돼지 데이터로 1회 훈련 필요)
                         predictor.train_lstm_on_data(logs_with_weights)
 
                         for _, rep_pig in pigs_below.iterrows():
                             pig_id = rep_pig["pig_id"]
-                            current_weight = rep_pig["weight_kg"]
-
                             pig_data_hist = logs_with_weights[logs_with_weights['pig_id'] == pig_id]
-
                             prediction_result_df = predictor.predict_shipment(pig_data_hist)
 
                             if not prediction_result_df.empty:
                                 pred_row = prediction_result_df.iloc[0]
-
-                                # 1. 'results' 리스트에 4개의 핵심 정보만 저장합니다.
                                 results.append({
                                     '돼지 ID': pig_id,
-                                    '현재 체중(kg)': round(current_weight, 1),
+                                    '현재 체중(kg)': round(rep_pig["weight_kg"], 1),
                                     '남은 일수(일)': int(pred_row['final_days_to_shipment']),
                                     '예상 출하 날짜': pred_row['predicted_shipment_date']
                                 })
 
                     if results:
-                        # 6. 예측 결과 테이블(DataFrame) 생성
-                        result_df = pd.DataFrame(results).sort_values('남은 일수(일)')
-
-                        fastest_pig = result_df.iloc[0]
-                        st.metric(
-                            f"가장 빠른 예상 출하일 (ID: {fastest_pig['돼지 ID']})",
-                            f"{fastest_pig['예상 출하 날짜']}",
-                            f"{fastest_pig['남은 일수(일)']}일 남음"
-                        )
-
-                        with st.expander("전체 개체별 예상 출하일 보기 (빠른 순)"):
-                            #2. 'result_df' (4개 컬럼만 있음)를 인덱스 설정 후 바로 표시합니다.
-                            st.dataframe(result_df.set_index('돼지 ID'), width='stretch')
+                        # 7. 예측 결과를 st.session_state에 저장
+                        st.session_state.prediction_results = pd.DataFrame(results).sort_values('남은 일수(일)')
                     else:
                         st.error("AI 예측 중 오류가 발생했습니다.")
-
+                        st.session_state.prediction_results = None  # 오류 시 초기화
                 else:
-                    st.success(f"데이터가 있는 모든 개체가 이미 목표 체중({target_weight}kg) 이상입니다.")
+                    st.success(f"모든 개체가 이미 목표 체중({target_weight}kg) 이상입니다.")
+                    st.session_state.prediction_results = pd.DataFrame()  # 빈 결과 저장
+
+            # 8. 예측 결과 표시 로직을 버튼 밖으로 이동
+            # (st.session_state에 저장된 결과가 있으면 항상 표시)
+            if st.session_state.prediction_results is not None:
+
+                result_df = st.session_state.prediction_results
+
+                if not result_df.empty:
+                    fastest_pig = result_df.iloc[0]
+                    st.metric(
+                        f"가장 빠른 예상 출하일 (ID: {fastest_pig['돼지 ID']})",
+                        f"{fastest_pig['예상 출하 날짜']}",
+                        f"{fastest_pig['남은 일수(일)']}일 남음"
+                    )
+                    with st.expander("전체 개체별 예상 출하일 보기 (빠른 순)"):
+                        st.dataframe(result_df.set_index('돼지 ID'), width='stretch')
+                else:
+                    # (예측 대상이 0마리일 때의 결과)
+                    st.success(f"예측 대상이 없거나, 모든 개체가 목표 체중({target_weight}kg) 이상입니다.")
             else:
-                st.warning("이 챔버에는 현재 유효한 체중 데이터가 없습니다.")
+                st.info("AI 예측을 실행하려면 버튼을 클릭하세요.")
+
         else:
-            st.warning("몸무게 데이터가 없거나 AI 예측기를 로드하지 못했습니다.")
-    with tab2:
-        if not equipment_df_filtered.empty:
-            min_date_eq = equipment_df_filtered['timestamp'].min().date()
-            max_date_eq = equipment_df_filtered['timestamp'].max().date()
-
-            date_range_eq = st.date_input(
-                "조회 기간을 선택하세요:",
-                value=(min_date_eq, max_date_eq),
-                min_value=min_date_eq,
-                max_value=max_date_eq,
-                key=f"energy_date_selector_{selected_id}"
-            )
-
-            energy_data_filtered_by_date = pd.DataFrame()
-            start_date_str = min_date_eq.isoformat()
-            end_date_str = max_date_eq.isoformat()
-
-            if len(date_range_eq) == 2:
-                start_date = pd.to_datetime(date_range_eq[0])
-                end_date = pd.to_datetime(date_range_eq[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-                start_date_str = date_range_eq[0].isoformat()
-                end_date_str = date_range_eq[1].isoformat()
-
-                energy_data_filtered_by_date = equipment_df_filtered[
-                    (equipment_df_filtered['timestamp'] >= start_date) &
-                    (equipment_df_filtered['timestamp'] <= end_date)
-                    ]
-
-            if energy_data_filtered_by_date.empty:
-                st.info("선택된 기간에 해당하는 에너지 데이터가 없습니다.")
-            else:
-                st.subheader(f"기간 내 장비별 사용량 ({start_date_str} ~ {end_date_str})")
-                period_usage = energy_data_filtered_by_date.groupby('equipment_type')['power_usage_wh'].sum() / 1000
-                fig_energy_period = px.bar(period_usage, title="장비별 기간 내 사용량 (kWh)",
-                                           labels={'value': '사용량 (kWh)', 'equipment_type': '장비 종류'})
-                st.plotly_chart(fig_energy_period, width='stretch')
-
-                st.divider()
-
-
-                @st.cache_data
-                def convert_df_to_csv(df):
-                    return df.to_csv(index=False, encoding='utf-8-sig')
-
-
-                csv_data = convert_df_to_csv(energy_data_filtered_by_date)
-
-                st.download_button(
-                    label=f"📈 기간({start_date_str}~{end_date_str}) 로그 다운로드",
-                    data=csv_data,
-                    file_name=f"energy_logs_{selected_no}ch_{start_date_str}_to_{end_date_str}.csv",
-                    mime="text/csv",
-                )
-        else:
-            st.warning("에너지 사용량 데이터가 없습니다.")
-
-    st.divider()
+            st.warning("이 챔버에는 현재 유효한 체중 데이터가 없습니다.")
+    else:
+        st.warning("몸무게 데이터가 없거나 AI 예측기를 로드하지 못했습니다.")

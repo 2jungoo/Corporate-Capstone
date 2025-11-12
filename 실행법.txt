@@ -1,0 +1,16 @@
+# 프로젝트 루트로 이동
+
+# .streamlit 폴더 생성
+mkdir .streamlit
+
+# secrets.toml 만들기(메모장으로 열기)
+notepad .streamlit\secrets.toml
+
+secrets.toml 내용
+[database]
+user = "user"
+password = "hansung133"
+host = "smartfarm-db.clwcyigyqmtg.ap-northeast-2.rds.amazonaws.com"
+port = 3306
+db_name = "smartfarm_db"
+

@@ -1,0 +1,51 @@
+{
+  "growth_curve_r2": 0.9999323262662388,
+  "weight_bins": {
+    "0-20kg": {
+      "mean_daily_gain": 0.45,
+      "std_daily_gain": 0.1,
+      "mean_feed": 0.8,
+      "count": 10
+    },
+    "20-40kg": {
+      "mean_daily_gain": 0.30707088184875636,
+      "std_daily_gain": 1.7397902392410267,
+      "count": 188
+    },
+    "40-60kg": {
+      "mean_daily_gain": 0.8019059018969404,
+      "std_daily_gain": 2.1061042875618488,
+      "count": 285
+    },
+    "60-80kg": {
+      "mean_daily_gain": 0.6799816188876223,
+      "std_daily_gain": 2.114343266524209,
+      "count": 273
+    },
+    "80-100kg": {
+      "mean_daily_gain": 0.9235462740047723,
+      "std_daily_gain": 2.0007633048726756,
+      "count": 247
+    },
+    "100kg+": {
+      "mean_daily_gain": 0.9015356771413109,
+      "std_daily_gain": 1.818041344068911,
+      "count": 413
+    }
+  },
+  "overall": {
+    "mean_daily_gain": 0.65,
+    "std_daily_gain": 0.15,
+    "median_daily_gain": 0.63,
+    "min_weight": 20.0,
+    "max_weight": 110.0,
+    "mean_weight": 50.0,
+    "mean_feed": 1.8,
+    "std_feed": 0.5
+  },
+  "feed_to_gain": {
+    "coefficient": 0.22,
+    "intercept": 0.2,
+    "r2": 0.65
+  }
+}

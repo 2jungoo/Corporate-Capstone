@@ -267,6 +267,32 @@ if st.session_state.view_mode == "overview":
                     on_click=set_detail_view,
                     args=(chamber_id, chamber_no)
                 )
+    # 일일 날씨 (시간별 상세 예보 DB)
+    st.header("🌦️ 일일 날씨")
+
+    # (대문자로 변환된 컬럼명 사용)
+    needed_weather_cols = {"FCST_DT", "T1H", "REH", "RN1", "SKY", "PTY"}
+
+    if not weather_ultra_fcst_df.empty and needed_weather_cols.issubset(weather_ultra_fcst_df.columns):
+
+        weather_chart_data = weather_ultra_fcst_df.set_index("FCST_DT")
+
+        w_tab1, w_tab2, w_tab3 = st.tabs(["🌡️ 기온 (T1H)", "💧 습도 (REH)", "☔ 시간당 강수량 (RN1)"])
+
+        with w_tab1:
+            st.plotly_chart(px.line(weather_chart_data, y='T1H', title='시간별 외부 기온'), width='stretch')
+        with w_tab2:
+            st.plotly_chart(px.line(weather_chart_data, y='REH', title='시간별 외부 습도'), width='stretch')
+        with w_tab3:
+            st.plotly_chart(px.bar(weather_chart_data, y='RN1', title='시간별 강수량'), width='stretch')
+
+        latest_sky = weather_ultra_fcst_df.iloc[0].get("SKY", -1)
+        st.info(f"현재 하늘 상태(SKY) 코드는 '{latest_sky}'입니다. (1: 맑음, 3: 구름많음, 4: 흐림)")
+
+    else:
+        st.warning("시간별 상세 날씨(weather_ultra_fcst) 데이터를 DB에서 불러오지 못했거나, 필요한 컬럼이 없습니다.")
+
+    st.divider()
     # ('주간 날씨 예보' 테이블)
     # ----------------------------------------------------
     st.divider()
@@ -465,33 +491,6 @@ elif st.session_state.view_mode == 'detail':
                 st.warning("유효한 건강 데이터(체온/호흡수)가 없습니다.")
         else:
             st.warning("돼지 로그 데이터를 찾을 수 없습니다.")
-
-    st.divider()
-
-    # 챔버 외부 날씨 (시간별 상세 예보 DB)
-    st.header("🌦️ 챔버 외부 날씨 (기상청 DB)")
-
-    # (대문자로 변환된 컬럼명 사용)
-    needed_weather_cols = {"FCST_DT", "T1H", "REH", "RN1", "SKY", "PTY"}
-
-    if not weather_ultra_fcst_df.empty and needed_weather_cols.issubset(weather_ultra_fcst_df.columns):
-
-        weather_chart_data = weather_ultra_fcst_df.set_index("FCST_DT")
-
-        w_tab1, w_tab2, w_tab3 = st.tabs(["🌡️ 외부 기온 (T1H)", "💧 외부 습도 (REH)", "☔ 시간당 강수량 (RN1)"])
-
-        with w_tab1:
-            st.plotly_chart(px.line(weather_chart_data, y='T1H', title='시간별 외부 기온'), width='stretch')
-        with w_tab2:
-            st.plotly_chart(px.line(weather_chart_data, y='REH', title='시간별 외부 습도'), width='stretch')
-        with w_tab3:
-            st.plotly_chart(px.bar(weather_chart_data, y='RN1', title='시간별 강수량'), width='stretch')
-
-        latest_sky = weather_ultra_fcst_df.iloc[0].get("SKY", -1)
-        st.info(f"참고: 현재 하늘 상태(SKY) 코드는 '{latest_sky}'입니다. (1: 맑음, 3: 구름많음, 4: 흐림)")
-
-    else:
-        st.warning("시간별 상세 날씨(weather_ultra_fcst) 데이터를 DB에서 불러오지 못했거나, 필요한 컬럼이 없습니다.")
 
     st.divider()
 
